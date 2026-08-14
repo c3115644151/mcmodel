@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+"""
+碰撞箱一键生成命令
+  python run.py <模型文件> [--res 16] [--exclude "握把,装饰"]
+  python run.py <模型文件> [--grid x:0] [--visualize]
+
+流程: 解析 -> 自动检测单/多格 -> 体素化合并(多格则切割) -> 输出 Java 代码 -> 可视化
+
+自动检测: 模型某轴跨度 > 16 单位即判定跨格, 自动推断格子边界。
+手动覆盖: --grid x:0 可手动指定切割边界。
+"""
+import argparse
+import sys
+import os
+from generate import load_cubes, VoxelGrid, compress_voxels, to_java, format_boxlist
+from parse_model import all_bounds
+from visualize import render_plane, print_plane
+
+
+def to_java_facing(boxes):
+    """生成带 FACING 四朝向的完整碰撞箱 Java 模板。
+    解决方向变体+碰撞箱不随旋转这一反复出现的问题。
+    参照项目 OakHighBackChairBlock/WoodenStoolBlock 的标准写法。"""
+    body = to_java(boxes)
+    return f'''// 朝北基准碰撞箱 (tools/collision 生成, 斜腿已分段)
+private static final VoxelShape SHAPE_BASE = {body};
+
+private static Rotation rotationFor(Direction facing) {{
+    return switch (facing) {{
+        case EAST -> Rotation.CLOCKWISE_90;
+        case SOUTH -> Rotation.CLOCKWISE_180;
+        case WEST -> Rotation.COUNTERCLOCKWISE_90;
+        default -> Rotation.NONE;
+    }};
+}}
+
+@Override
+protected VoxelShape getShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext ctx) {{
+    Rotation rot = rotationFor(state.getValue(FACING));
+    return rot == Rotation.NONE ? SHAPE_BASE : Shapes.rotate(SHAPE_BASE, rot.rotation());
+}}
+
+@Override
+protected VoxelShape getCollisionShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext ctx) {{
+    return getShape(state, level, pos, ctx);
+}}'''
+
+
+def main():
+    ap = argparse.ArgumentParser(description='碰撞箱一键生成 + 可视化')
+    ap.add_argument('model', help='bbmodel 或 model JSON 路径')
+    ap.add_argument('--res', type=int, default=16, help='体素分辨率 (每单位体素数, 默认16)')
+    ap.add_argument('--seg-count', type=int, default=3, help='斜面元素分段数 (默认3, 减少box和黑线)')
+    ap.add_argument('--max-boxes', type=int, default=None, help='需求: 最大 box 数, 工具自动算分段数')
+    ap.add_argument('--max-air', type=float, default=None, help='需求: 最大空气率(%), 工具自动算分段数')
+    ap.add_argument('--exclude', default='', help='排除的 cube 名称, 逗号分隔 (如握把,装饰)')
+    ap.add_argument('--prefix', default='', help='排除名称前缀 (如 noCollision_)')
+    ap.add_argument('--grid', action='append', default=[], help='手动指定格子边界, 如 x:0 或 x:-8,8')
+    ap.add_argument('--visualize', action='store_true', help='生成后显示三视图叠加')
+    ap.add_argument('--vres', type=int, default=2, help='可视化分辨率')
+    ap.add_argument('--no-validate', action='store_true', help='跳过模型实装验证(UV越界/粒子/图标等)')
+    ap.add_argument('--fix', action='store_true', help='验证器自动修复可修复的模型问题')
+    ap.add_argument('--facing', action='store_true',
+                    help='输出带 FACING 四朝向的完整 Java 模板(属性+rotationFor+getShape旋转)')
+    args = ap.parse_args()
+
+    # 模型实装验证(默认开启, 检测 UV 越界/粒子乱码/图标错位等常见坑)
+    if not args.no_validate:
+        try:
+            from validate_model import load_model, detect_issues, apply_fixes
+            vm = load_model(args.model)
+            issues = detect_issues(vm, args.model)
+            errors = [i for i in issues if i[0] == 'ERROR']
+            warns = [i for i in issues if i[0] == 'WARN']
+            if issues:
+                print(f"\n[模型验证] {len(errors)} 错误, {len(warns)} 警告")
+                for sev, code, msg, fix in issues:
+                    icon = '❌' if sev == 'ERROR' else '⚠️'
+                    print(f"  {icon} [{code}] {msg}")
+                if args.fix:
+                    fixes = apply_fixes(vm, args.model, issues)
+                    if fixes:
+                        import json as _json
+                        with open(args.model, 'w', encoding='utf-8') as _f:
+                            _json.dump(vm, _f, indent=2, ensure_ascii=False)
+                        for fx in fixes:
+                            print(f"  🔧 已修复: {fx}")
+                if errors and not args.fix:
+                    print("\n  ⚠️  存在 ERROR 级问题，模型可能无法渲染。加 --fix 自动修复，或手动处理后重试。")
+            else:
+                print("[模型验证] ✅ 未发现实装问题")
+        except Exception as e:
+            print(f"[模型验证] 跳过（验证器异常: {e}）")
+
+    cubes = load_cubes(args.model)
+    if args.exclude or args.prefix:
+        ex = set(n.strip() for n in args.exclude.split(',') if n.strip())
+        kept = [c for c in cubes if c['name'] not in ex and not (args.prefix and c['name'].startswith(args.prefix))]
+        removed = [c for c in cubes if c not in kept]
+        print(f"[过滤] 排除 {len(removed)} 个: {[c['name'] for c in removed]}")
+        cubes = kept
+
+    # 合并几何重合的面壳 cube(如毛毯外翻/内翻)
+    from parse_model import merge_overlapping_hollow_cubes
+    merged = merge_overlapping_hollow_cubes(cubes)
+    if len(merged) < len(cubes):
+        print(f"[合并] 重合面壳合并: {len(cubes)} -> {len(merged)} 个 cube")
+        cubes = merged
+
+    # 自动检测多格
+    from multiblock import auto_detect_grid, parse_grid
+    grid = None
+    if args.grid:
+        grid = parse_grid(args.grid)
+        print(f"[网格] 手动指定: {grid}")
+    else:
+        grid = auto_detect_grid(cubes)
+        if grid:
+            print(f"[网格] 自动检测跨格: {grid} (多格模型)")
+        else:
+            print("[网格] 单格模型")
+
+    # 自适应合并: 支持需求模式(max-boxes/max-air) 或 指定分段数
+    from generate import compress_adaptive
+    if args.max_boxes or args.max_air:
+        # 需求模式: 扫描分段, 按约束选最优
+        from optimize import scan_options, choose_option
+        options = scan_options(cubes, 8)
+        seg, boxes, nb, air = choose_option(options, args.max_boxes, args.max_air)
+        print(f"[需求] max_boxes={args.max_boxes}, max_air={args.max_air} → 分段{seg}, {nb} box, 空气{air:.1f}%")
+        print("  可选方案:")
+        for s, b, n, a in options:
+            mark = ' ← 选中' if s == seg else ''
+            print(f"    分段{s}: {n} box, 空气 {a:.1f}%{mark}")
+    else:
+        seg_count = 3 if not args.seg_count else args.seg_count
+        boxes = compress_adaptive(cubes, res=args.res, seg_count=seg_count)
+        print(f"[自适应] 斜腿等斜面分 {seg_count} 段, 其余精确贴合 ({len(boxes)} box)")
+
+    if grid:
+        # 多格: 切割输出
+        from multiblock import split_all_boxes, to_local, compute_cell_origins
+        bx = all_bounds(cubes)
+        model_min = {'x': bx[0], 'y': bx[1], 'z': bx[2]}
+        origins = compute_cell_origins(grid, model_min, {'x': bx[3], 'y': bx[4], 'z': bx[5]})
+        cells = split_all_boxes(boxes, grid)
+        print(f"\n=== 多方块切割 (共 {len(boxes)} box -> {len(cells)} 格) ===")
+        for key in sorted(cells.keys()):
+            cell_boxes = cells[key]
+            local = [to_local(b, origins, grid) for b in cell_boxes]
+            print(f"\n格子 {key}: {len(cell_boxes)} box (局部坐标)")
+            print(format_boxlist(local))
+            print("Java:")
+            print(to_java(local))
+    else:
+        # 单格: 直接输出
+        print(f"\n=== 碰撞箱生成结果 (共 {len(cubes)} cube -> {len(boxes)} box) ===")
+        print(format_boxlist(boxes))
+        if args.facing:
+            # 输出带 FACING 四朝向的完整模板 (解决"方向变体+碰撞箱旋转"反复出现的问题)
+            print("\n=== Java 代码 (带 FACING 四朝向, 直接粘贴到 Block 类) ===")
+            print(to_java_facing(boxes))
+        else:
+            print("\n=== Java 代码 (粘贴到 Block 类) ===")
+            print(to_java(boxes))
+
+    # 可视化
+    if args.visualize:
+        print("\n\n### 三视图叠加 ( #=模型 @=碰撞 * =重叠 .=空 ) ###")
+        for name, ah, av, hl, vl in [("前视图XY(从南看)", 0, 1, 'x', 'y'),
+                                     ("侧视图YZ(从东看)", 2, 1, 'z', 'y'),
+                                     ("俯视图XZ(从上看)", 0, 2, 'x', 'z')]:
+            gh, hmin, vmin, res = render_plane(cubes, boxes, args.vres, ah, av)
+            print(f"\n=== {name} ===")
+            print_plane(gh, hmin, vmin, res, hl, vl)
+
+
+if __name__ == '__main__':
+    main()
