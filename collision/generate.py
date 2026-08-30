@@ -21,18 +21,20 @@ from parse_model import load_cubes, cube_aabb
 class VoxelGrid:
     """体素网格: 每个 cube 占据的轴对齐体素"""
 
-    def __init__(self, resolution=16, tex_img=None, tex_size=(0,0)):
+    def __init__(self, resolution=16, tex_img=None, tex_size=(0,0), tex_uv=(16,16)):
         self.res = resolution          # 每单位体素数
         self.voxel_size = 1.0 / resolution
         self.shell_thickness = 1.0 / resolution  # 面壳厚度(默认1/16格)
         self.tex_img = tex_img        # 纹理图 (RGBA), 用于面覆盖率检测
         self.tex_w, self.tex_h = tex_size
+        self.tex_uvw, self.tex_uvh = tex_uv  # 模型 UV 坐标系尺寸(bb resolution), 供 uv→像素换算
 
     def _face_solid(self, cube, face):
         """该面实心占比 (读纹理). 无纹理图则退回 tex 引用判断."""
         if self.tex_img is not None:
             from face_coverage import face_solid_ratio
-            return face_solid_ratio(cube, face, self.tex_img, self.tex_w, self.tex_h)
+            return face_solid_ratio(cube, face, self.tex_img, self.tex_w, self.tex_h,
+                                     self.tex_uvw, self.tex_uvh)
         from parse_model import has_face_texture
         return 1.0 if has_face_texture(cube, face) else 0.0
 
@@ -51,25 +53,33 @@ class VoxelGrid:
         vz1 = min(d, math.floor(z1 * self.res) - oz)
 
         rot = cube.get('rotation')
-        # 面壳识别: 仅当 cube 确实是"壳"(hollow/面数≤4)时才建薄壳。
-        # 实心立方体(体积非零 from<to)即使某侧面没贴图(UV空白, 覆盖率0)也仍是实心,
-        # 不按覆盖率误拆 —— 否则腿/柱这类侧面无纹素的实心柱会被拆碎。
         from parse_model import is_hollow_cube
-        is_hollow = is_hollow_cube(cube) and rot is None
-        # 局部镂空面: 该面覆盖率在 (0,1) 之间(不是全实心也不是全空) → 需逐体素重建
-        has_partial = any(0.0 < self._face_solid(cube, f) < 1.0
-                          for f in ('north','east','south','west','up','down'))
+
+        # 判定"空心壳": 面数少 或 存在实心率极低(≈空)的面。
+        # (uv 修复后 _face_solid 能正确反映顶空 up=0 → 这类"有面没贴图"是空心墙盒,
+        #  而不是实心。旧 is_hollow_cube 只看 tex 字段存在, 漏判空面。)
+        if rot is None and self.tex_img is not None:
+            n_empty = sum(1 for f in ('north','east','south','west','up','down')
+                          if self._face_solid(cube, f) < 0.5)
+            is_hollow = is_hollow_cube(cube) or (n_empty >= 1)
+        else:
+            is_hollow = is_hollow_cube(cube) and rot is None
+
         if is_hollow and rot is None:
+            # 空心壳(如鸡舍墙盒): 逐面薄壳 + 投射 —— 顶面空则顶不建墙, 内部留空
             self._mark_hollow(cube, grid, ox, oy, oz, w, h, d, vx0, vy0, vz0, vx1, vy1, vz1)
             return
-        if rot is None and self.tex_img is not None and has_partial:
-            # 有局部镂空面(如箱盖楔形) → 按"对面相交+UV映射"逐体素重建
-            from face_coverage import rebuild_voxels_from_texture
-            rebuild_voxels_from_texture(cube, self.tex_img, self.tex_w, self.tex_h,
-                                        grid, ox, oy, oz, w, h, d, self.res)
-            return
+        if rot is None and self.tex_img is not None:
+            # 非壳: 任意面存在空区 → 逐面重建(反映真实渲染面)
+            has_hole = any(self._face_solid(cube, f) < 1.0 for f in ('north','east','south','west','up','down'))
+            if has_hole:
+                from face_coverage import rebuild_voxels_from_texture
+                rebuild_voxels_from_texture(cube, self.tex_img, self.tex_w, self.tex_h,
+                                            grid, ox, oy, oz, w, h, d, self.res,
+                                            self.tex_uvw, self.tex_uvh)
+                return
         if rot is None:
-            # 非旋转实心: 快路径
+            # 全实心: 快路径
             for x in range(vx0, vx1):
                 for y in range(vy0, vy1):
                     for z in range(vz0, vz1):
@@ -373,7 +383,7 @@ def dedupe_boxes(boxes, res=16):
     return out
 
 
-def compress_adaptive(cubes, res=16, seg_count=3, skip_rotated_decor=True, tex_img=None, tex_size=(0, 0)):
+def compress_adaptive(cubes, res=16, seg_count=3, skip_rotated_decor=True, tex_img=None, tex_size=(0, 0), tex_uv=(16, 16)):
     """自适应合并: 非旋转 cube 纹理覆盖体素化; 旋转 cube 处理。
 
     【斜体处理】skip_rotated_decor=True (默认 — 报备模式):
@@ -410,7 +420,7 @@ def compress_adaptive(cubes, res=16, seg_count=3, skip_rotated_decor=True, tex_i
         else:
             # 非旋转 cube: 有纹理时走纹理覆盖分支(薄壳/局部镂空), 无纹理退回实心
             if tex_img is not None:
-                vg = VoxelGrid(res, tex_img=tex_img, tex_size=tex_size)
+                vg = VoxelGrid(res, tex_img=tex_img, tex_size=tex_size, tex_uv=tex_uv)
                 g, o, dims = vg.build_grid([cube])
                 main.extend(compress_voxels(g, o, dims[0], dims[1], dims[2], res))
             else:

@@ -14,23 +14,37 @@ import json
 
 
 def load_texture_from_bbmodel(source):
-    """从 bbmodel 解出第一个纹理图, 返回 (ImageRGBA, width, height) 或 (None,0,0)."""
+    """从 bbmodel 解出第一个纹理图, 返回 (ImageRGBA, width, height, uv_w, uv_h) 或 (None,0,0,0,0).
+
+    width/height = 纹理声明尺寸(图像像素); uv_w/uv_h = 模型 UV 坐标系(bbmodel resolution)。
+    BlockBench 公式 uvFactor = texture.width / texture.getUVWidth() → uv×uvFactor 得像素。
+    """
     try:
         with open(source, encoding='utf-8') as f:
             data = json.load(f)
+        res = data.get('resolution', {})
+        uv_w = res.get('width', 16)
+        uv_h = res.get('height', 16)
         for t in data.get('textures', []):
             src = t.get('source', '')
             if src.startswith('data:image/png;base64,'):
                 png = base64.b64decode(src.split(',', 1)[1])
                 img = Image.open(io.BytesIO(png)).convert('RGBA')
-                return img, t.get('width', 128), t.get('height', 128)
-        return None, 0, 0
+                return img, t.get('width', 128), t.get('height', 128), uv_w, uv_h
+        return None, 0, 0, uv_w, uv_h
     except Exception:
-        return None, 0, 0
+        return None, 0, 0, 0, 0
 
 
-def face_uv_px(cube, face, W, H):
-    """返回该面的 UV 像素矩形 (u1p,v1p,u2p,v2p), uv 单位是像素. 退化返回 None."""
+def face_uv_px(cube, face, W, H, uv_w=16, uv_h=16):
+    """返回该面的 UV 像素矩形 (u1p,v1p,u2p,v2p).
+
+    【BlockBench 权威 uv→像素】(复刻源码 uvFactor=texture.width/texture.getUVWidth()):
+        uvFactorX = W / uv_w     (uv_w = 模型 UV 坐标系宽, = bbmodel resolution 宽)
+        uvFactorY = H / uv_h
+        px = uv × uvFactor   (uv 是 0~uv_w 坐标系, 可>16 如腿 v=17.75)
+    不做 v 翻转、不除以 16。旧版全错(×8/÷16/翻转), 根源是缩放因子应为 W/uv_w 而非 W/16。
+    """
     fd = cube.get('faces', {}).get(face)
     if not fd:
         return None
@@ -38,8 +52,12 @@ def face_uv_px(cube, face, W, H):
     if not uv or len(uv) != 4:
         return None
     u1, v1, u2, v2 = uv
-    u1p, u2p = int(min(u1, u2)), int(max(u1, u2))
-    v1p, v2p = int(min(v1, v2)), int(max(v1, v2))
+    fx = W / uv_w if uv_w else (W / 16.0)
+    fy = H / uv_h if uv_h else (H / 16.0)
+    ua, ub = u1 * fx, u2 * fx
+    va, vb = v1 * fy, v2 * fy
+    u1p, u2p = int(min(ua, ub)), int(max(ua, ub))
+    v1p, v2p = int(min(va, vb)), int(max(va, vb))
     u1p, u2p = max(0, min(W, u1p)), max(0, min(W, u2p))
     v1p, v2p = max(0, min(H, v1p)), max(0, min(H, v2p))
     if u2p <= u1p or v2p <= v1p:
@@ -47,9 +65,9 @@ def face_uv_px(cube, face, W, H):
     return (u1p, v1p, u2p, v2p)
 
 
-def face_solid_ratio(cube, face, img, W, H, alpha_thresh=0.1):
+def face_solid_ratio(cube, face, img, W, H, uv_w=16, uv_h=16, alpha_thresh=0.1):
     """该面实心占比 (像素 alpha >= thresh*255 的比例). 1.0=全实心, 0=全透明空气."""
-    rect = face_uv_px(cube, face, W, H)
+    rect = face_uv_px(cube, face, W, H, uv_w, uv_h)
     if rect is None:
         return 0.0
     region = img.crop(rect)
@@ -110,7 +128,7 @@ def rebuild_voxel_from_faces(cube, img, W, H, res, model_min):
     raise NotImplementedError("轴映射需显式提供, 见 rebuild: axis_map")
 
 
-def rebuild_voxels_from_texture(cube, img, W, H, grid, ox, oy, oz, w, h, d, res):
+def rebuild_voxels_from_texture(cube, img, W, H, grid, ox, oy, oz, w, h, d, res, uv_w=16, uv_h=16):
     """按"对面相交 + MC标准UV映射"逐体素重建 cube 实体。
 
     规则 (用户直觉): 体素实心 = 它在"x/east-west、y/up-down、z/north-south"
@@ -121,11 +139,17 @@ def rebuild_voxels_from_texture(cube, img, W, H, grid, ox, oy, oz, w, h, d, res)
       north/south: u=模型x, v=模型y
       east/west:   u=模型z, v=模型y
 
+    【uv→像素修正】face_pixel 用 BlockBench 公式: 体素位置在面内归一化到 [0,1],
+    映射到 uv 区间 [umin,umax]×[vmin,vmax], 再 ×uvFactor(=W/uv_w) 得真实图像像素, v 翻转.
+    (旧版把 uv 值直接当图像像素, 未乘 uvFator, 导致采样错位/整块填满。)
+
     直接把体素标记进 grid (in-place).
     """
     from parse_model import cube_aabb
     a = cube_aabb(cube)
     x0, y0, z0, x1, y1, z1 = a
+    fx = W / uv_w if uv_w else (W / 16.0)
+    fy = H / uv_h if uv_h else (H / 16.0)
 
     def face_pixel(face, mx, my, mz):
         fd = cube['faces'].get(face)
@@ -144,7 +168,10 @@ def rebuild_voxels_from_texture(cube, img, W, H, grid, ox, oy, oz, w, h, d, res)
             ax_u, ax_v = (z0, z1), (y0, y1)
         pu = (mx - ax_u[0]) / (ax_u[1] - ax_u[0]) if ax_u[1] > ax_u[0] else 0
         pv = (my - ax_v[0]) / (ax_v[1] - ax_v[0]) if ax_v[1] > ax_v[0] else 0
-        px = int(umin + pu * (umax - umin)); py = int(vmin + pv * (vmax - vmin))
+        # uv → 图像像素: u 方向 × fx; v 自下而上 → (vmax - 该点uv) × fy
+        u_px = umin + pu * (umax - umin)
+        v_px = vmin + pv * (vmax - vmin)
+        px = int(u_px * fx); py = int(v_px * fy)
         px = max(0, min(W - 1, px)); py = max(0, min(H - 1, py))
         return (px, py)
 

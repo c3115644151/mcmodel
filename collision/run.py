@@ -56,19 +56,20 @@ def deploy_collision(model_path, res=16, seg_count=6, allow_exposure=True, exclu
         g = auto_detect_grid(cubes)
         grid = g if g else None
 
-    # 解析纹理图供面覆盖检测
-    tex_img, tex_w, tex_h = None, 0, 0
+    # 解析纹理图供面覆盖检测 (含 uv 坐标系尺寸, 供 uv→像素换算)
+    tex_img, tex_w, tex_h, tex_uvw, tex_uvh = None, 0, 0, 16, 16
     try:
         from face_coverage import load_texture_from_bbmodel
         if not str(model_path).lower().endswith('.json'):
-            tex_img, tex_w, tex_h = load_texture_from_bbmodel(model_path)
+            tex_img, tex_w, tex_h, tex_uvw, tex_uvh = load_texture_from_bbmodel(model_path)
     except Exception:
-        tex_img, tex_w, tex_h = None, 0, 0
+        tex_img, tex_w, tex_h, tex_uvw, tex_uvh = None, 0, 0, 16, 16
 
     if allow_exposure:
         from generate import compress_adaptive
         boxes, rotated = compress_adaptive(cubes, res=res, seg_count=seg_count,
-                                           skip_rotated_decor=True, tex_img=tex_img, tex_size=(tex_w, tex_h))
+                                           skip_rotated_decor=True, tex_img=tex_img, tex_size=(tex_w, tex_h),
+                                           tex_uv=(tex_uvw, tex_uvh))
         air = None
     else:
         boxes, air, nb = solve_zero_exposure(cubes, res=res, seg_count=seg_count, source=model_path)

@@ -65,17 +65,17 @@ def solve_zero_exposure(cubes, res=16, seg_count=6, source=None):
     """
     from generate import VoxelGrid, compress_voxels
 
-    # 加载纹理图 (Pillow) 供面覆盖检测
-    tex_img, tex_w, tex_h = None, 0, 0
+    # 加载纹理图 (Pillow) 供面覆盖检测 (含 uv 坐标系尺寸)
+    tex_img, tex_w, tex_h, tex_uvw, tex_uvh = None, 0, 0, 16, 16
     if source:
         try:
             from face_coverage import load_texture_from_bbmodel
-            tex_img, tex_w, tex_h = load_texture_from_bbmodel(source)
+            tex_img, tex_w, tex_h, tex_uvw, tex_uvh = load_texture_from_bbmodel(source)
         except Exception:
-            tex_img, tex_w, tex_h = None, 0, 0
+            tex_img, tex_w, tex_h, tex_uvw, tex_uvh = None, 0, 0, 16, 16
 
     # 体素化真渲染结构 (mark_cube 对镂空/薄壳 cube 建薄壳, 对全实心 cube 建整块)
-    vg = VoxelGrid(res, tex_img=tex_img, tex_size=(tex_w, tex_h))
+    vg = VoxelGrid(res, tex_img=tex_img, tex_size=(tex_w, tex_h), tex_uv=(tex_uvw, tex_uvh))
     grid, origin, (w, h, d) = vg.build_grid(cubes)
     # 压缩体素 → 轴对齐 box 列表 (碰撞箱 == 渲染结构)
     boxes = compress_voxels(grid, origin, w, h, d, res)
