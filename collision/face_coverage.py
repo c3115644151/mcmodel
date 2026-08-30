@@ -252,7 +252,10 @@ def face_shape_rows(cube, face, img, W, H, uv_w=16, uv_h=16, steps=8):
         my_mid = (my0 + my1) / 2
         # 模型v位置(沿高度) → uv v
         pv = (my_mid - ay_h[0]) / hw
-        v_px = vmin + pv * (vmax - vmin)
+        # v 方向: 模型底部(pv=0) 对应纹理 v 大端(uv[3]), 顶部(pv=1) 对应 v 小端(uv[1])。
+        # (实测 north: uv[1]=11.5 窄[梯形顶], uv[3]=15.25 空; 宽段在 v 大端 → 底宽顶窄,
+        #  即模型底=大v。故反向映射 v_px = vmin + (1-pv)*(vmax-vmin)。)
+        v_px = vmin + (1.0 - pv) * (vmax - vmin)
         v_px = max(0, min(H - 1, int(v_px * fy)))
         # 采样该 v 行, 找 u 方向的实体(非透明)范围 → 映射回模型 au 轴
         solid_cols = []
