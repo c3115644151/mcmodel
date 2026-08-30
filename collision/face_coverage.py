@@ -181,6 +181,9 @@ def face_pair_boxes(cube, img, W, H):
     a = cube_aabb(cube); x0,y0,z0,x1,y1,z1 = a
 
     def solid_px(face):
+        """返回该面实心像素归一化到 UV 区域的包围盒分数 (u0,u1,v0,v1 各∈[0,1])。
+        通过把实心像素包围盒除以该面 UV 区域尺寸, 得到 0~1 的相对位置, 供 px2ax
+        映射到模型轴。修复旧版把像素绝对坐标当 UV 值混算导致的 box 越界。"""
         fd = cube['faces'].get(face); uv = fd.get('uv') if fd else None
         if not uv: return None
         u1,v1,u2,v2 = uv
@@ -188,33 +191,36 @@ def face_pair_boxes(cube, img, W, H):
         cells=[(x,y) for x in range(max(0,min(W,u1p)),min(W,u2p)) for y in range(max(0,min(H,v1p)),min(H,v2p)) if img.getpixel((x,y))[3]>=25]
         if not cells: return None
         xs=[cc[0] for cc in cells]; ys=[cc[1] for cc in cells]
-        return (min(xs),max(xs),min(ys),max(ys))
+        # UV 区域尺寸(像素), 防零
+        uw = max(u2p-u1p, 1); vh = max(v2p-v1p, 1)
+        # 归一化到 [0,1] (相对该 face 的 UV 区域)
+        nu0=(min(xs)-u1p)/uw; nu1=(max(xs)-u1p+1)/uw
+        nv0=(min(ys)-v1p)/vh; nv1=(max(ys)-v1p+1)/vh
+        return (nu0,nu1,nv0,nv1)
 
-    def px2ax(p_lo,p_hi,p0,p1,ax0,ax1):
-        span=abs(p1-p0)
-        if span==0: return (ax0,ax1)
-        t1=(p_lo-min(p0,p1))/span; t2=(p_hi-min(p0,p1))/span
-        lo=ax0+t1*(ax1-ax0); hi=ax0+t2*(ax1-ax0); return (min(lo,hi),max(lo,hi))
+    def px2ax(frac0, frac1, ax0, ax1):
+        """分数(0~1) 映射到模型轴 [ax0,ax1]。frac 是相对 face UV 区域的归一化位置。"""
+        lo=ax0+frac0*(ax1-ax0); hi=ax0+frac1*(ax1-ax0)
+        return (min(lo,hi),max(lo,hi))
 
     def pair(fa,fb,axis):
         ra=solid_px(fa); rb=solid_px(fb)
         if ra is None or rb is None: return None
-        uva=cube['faces'][fa]['uv']; uvb=cube['faces'][fb]['uv']
         if axis=='y':
-            ua=px2ax(ra[0],ra[1],uva[0],uva[2],x0,x1); ub=px2ax(rb[0],rb[1],uvb[0],uvb[2],x0,x1)
-            va=px2ax(ra[2],ra[3],uva[1],uva[3],z0,z1); vb=px2ax(rb[2],rb[3],uvb[1],uvb[3],z0,z1)
+            ua=px2ax(ra[0],ra[1],x0,x1); ub=px2ax(rb[0],rb[1],x0,x1)
+            va=px2ax(ra[2],ra[3],z0,z1); vb=px2ax(rb[2],rb[3],z0,z1)
             xx=(max(ua[0],ub[0]),min(ua[1],ub[1])); zz=(max(va[0],vb[0]),min(va[1],vb[1]))
             if xx[0]>xx[1] or zz[0]>zz[1]: return None
             return (xx[0],y0,zz[0],xx[1],y1,zz[1])
         if axis=='x':
-            ua=px2ax(ra[0],ra[1],uva[0],uva[2],z0,z1); ub=px2ax(rb[0],rb[1],uvb[0],uvb[2],z0,z1)
-            va=px2ax(ra[2],ra[3],uva[1],uva[3],y0,y1); vb=px2ax(rb[2],rb[3],uvb[1],uvb[3],y0,y1)
+            ua=px2ax(ra[0],ra[1],z0,z1); ub=px2ax(rb[0],rb[1],z0,z1)
+            va=px2ax(ra[2],ra[3],y0,y1); vb=px2ax(rb[2],rb[3],y0,y1)
             zz=(max(ua[0],ub[0]),min(ua[1],ub[1])); yy=(max(va[0],vb[0]),min(va[1],vb[1]))
             if zz[0]>zz[1] or yy[0]>yy[1]: return None
             return (x0,yy[0],zz[0],x1,yy[1],zz[1])
         if axis=='z':
-            ua=px2ax(ra[0],ra[1],uva[0],uva[2],x0,x1); ub=px2ax(rb[0],rb[1],uvb[0],uvb[2],x0,x1)
-            va=px2ax(ra[2],ra[3],uva[1],uva[3],y0,y1); vb=px2ax(rb[2],rb[3],uvb[1],uvb[3],y0,y1)
+            ua=px2ax(ra[0],ra[1],x0,x1); ub=px2ax(rb[0],rb[1],x0,x1)
+            va=px2ax(ra[2],ra[3],y0,y1); vb=px2ax(rb[2],rb[3],y0,y1)
             xx=(max(ua[0],ub[0]),min(ua[1],ub[1])); yy=(max(va[0],vb[0]),min(va[1],vb[1]))
             if xx[0]>xx[1] or yy[0]>yy[1]: return None
             return (xx[0],yy[0],z0,xx[1],yy[1],z1)
