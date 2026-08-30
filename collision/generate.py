@@ -14,6 +14,7 @@
     python generate.py <模型文件> [--resolution 16] [--exclude 名称1,名称2] [--prefix 前缀]
 """
 import argparse
+import math
 from parse_model import load_cubes, cube_aabb
 
 
@@ -40,12 +41,14 @@ class VoxelGrid:
         对旋转 cube 用逆旋转+中心点采样判断体素是否真在旋转体内(细粒度斜切面)。
         对面壳/局部镂空 cube(某面覆盖率低)只在该实心方向建薄壳碰撞。"""
         x0, y0, z0, x1, y1, z1 = cube_aabb(cube)
-        vx0 = max(0, int(round(x0 * self.res)) - ox)
-        vy0 = max(0, int(round(y0 * self.res)) - oy)
-        vz0 = max(0, int(round(z0 * self.res)) - oz)
-        vx1 = min(w, int(round(x1 * self.res)) - ox)
-        vy1 = min(h, int(round(y1 * self.res)) - oy)
-        vz1 = min(d, int(round(z1 * self.res)) - oz)
+        # 体素索引 = floor(坐标*res) - floor(全局min*res)。用 floor 对齐 build_grid 的偏移,
+        # 避免 int(round()) 对负值向零截断导致范围错位(模型负坐标时循环膨胀/网格错位)。
+        vx0 = max(0, math.floor(x0 * self.res) - ox)
+        vy0 = max(0, math.floor(y0 * self.res) - oy)
+        vz0 = max(0, math.floor(z0 * self.res) - oz)
+        vx1 = min(w, math.floor(x1 * self.res) - ox)
+        vy1 = min(h, math.floor(y1 * self.res) - oy)
+        vz1 = min(d, math.floor(z1 * self.res) - oz)
 
         rot = cube.get('rotation')
         # 面壳识别: 仅当 cube 确实是"壳"(hollow/面数≤4)时才建薄壳。
@@ -122,12 +125,12 @@ class VoxelGrid:
 
         for sh in shells:
             sx0, sy0, sz0, sx1, sy1, sz1 = sh
-            svx0 = max(0, int(round(sx0 * self.res)) - ox)
-            svy0 = max(0, int(round(sy0 * self.res)) - oy)
-            svz0 = max(0, int(round(sz0 * self.res)) - oz)
-            svx1 = min(w, int(round(sx1 * self.res)) - ox)
-            svy1 = min(h, int(round(sy1 * self.res)) - oy)
-            svz1 = min(d, int(round(sz1 * self.res)) - oz)
+            svx0 = max(0, math.floor(sx0 * self.res) - ox)
+            svy0 = max(0, math.floor(sy0 * self.res) - oy)
+            svz0 = max(0, math.floor(sz0 * self.res) - oz)
+            svx1 = min(w, math.floor(sx1 * self.res) - ox)
+            svy1 = min(h, math.floor(sy1 * self.res) - oy)
+            svz1 = min(d, math.floor(sz1 * self.res) - oz)
             for x in range(svx0, svx1):
                 for y in range(svy0, svy1):
                     for z in range(svz0, svz1):
@@ -141,9 +144,9 @@ class VoxelGrid:
             x0, y0, z0, x1, y1, z1 = cube_aabb(c)
             bx0 = min(bx0, x0); by0 = min(by0, y0); bz0 = min(bz0, z0)
             bx1 = max(bx1, x1); by1 = max(by1, y1); bz1 = max(bz1, z1)
-        ox = int(bx0 * self.res)
-        oy = int(by0 * self.res)
-        oz = int(bz0 * self.res)
+        ox = math.floor(bx0 * self.res)
+        oy = math.floor(by0 * self.res)
+        oz = math.floor(bz0 * self.res)
         w = int(bx1 * self.res) - ox
         h = int(by1 * self.res) - oy
         d = int(bz1 * self.res) - oz
