@@ -200,6 +200,74 @@ def rebuild_voxels_from_texture(cube, img, W, H, grid, ox, oy, oz, w, h, d, res,
                     grid[vx][vy][vz] = True
 
 
+def face_shape_rows(cube, face, img, W, H, uv_w=16, uv_h=16, steps=8):
+    """【映射层】逐行读该面纹理的实体范围, 返回"该面的有效结构形状".
+
+    对一面(北/南/东/西/上/下), 沿其高度(H方向)分 steps 行(模型坐标), 每行读纹理
+    该高度带的非透明像素范围 → 实体在该行占据的模型坐标区间。
+    这筛掉空气, 留下"有效结构"——如墙盒前墙: 顶部梯形(x收窄) + 底部矩形(x全宽),
+    门洞开口行(x为0空)。薄壳层据此建贴合形状的薄壁。
+
+    MC 标准 UV 轴映射 (与 rebuild_voxels_from_texture 一致):
+      up/down:   u=模型x, v=模型z
+      north/south: u=模型x, v=模型y
+      east/west:   u=模型z, v=模型y
+
+    返回 dict: {'row_ranges': [ (y_lo, y_hi, u_lo, u_hi), ... ], 'empty': bool}
+      - 每行 (模型高度区间, 该行实体的 u轴范围[max轴投影])
+      - empty=该面完全无实体
+    """
+    from parse_model import cube_aabb
+    a = cube_aabb(cube); x0, y0, z0, x1, y1, z1 = a
+    fd = cube.get('faces', {}).get(face)
+    if not fd:
+        return {'rows': [], 'empty': True}
+    uv = fd.get('uv')
+    if not uv or len(uv) != 4:
+        return {'rows': [], 'empty': True}
+    umin, umax = min(uv[0], uv[2]), max(uv[0], uv[2])
+    vmin, vmax = min(uv[1], uv[3]), max(uv[1], uv[3])
+    fx = W / uv_w if uv_w else (W / 16.0)
+    fy = H / uv_h if uv_h else (H / 16.0)
+    # 面的两个轴: (高度轴分量方向, u轴对应模型轴范围)
+    if face in ('up', 'down'):
+        ay_h = (y0, y1)          # 高度轴 = 模型 y? 但 up/down 高度是 y, u=模型x
+        ax_h = (z0, z1)          # 该面"宽度"方向(投影到碰撞的轴)
+        au = (x0, x1)            # u 对应模型 x
+    elif face in ('north', 'south'):
+        ay_h = (y0, y1)
+        ax_h = (z0, z1)          # 墙的厚度方向(z)对碰撞无意义, 实体范围取 u(=模型x)方向
+        au = (x0, x1)
+    else:  # east/west
+        ay_h = (y0, y1)
+        ax_h = (x0, x1)
+        au = (z0, z1)
+    hw = ay_h[1] - ay_h[0]
+    if hw <= 0:
+        return {'rows': [], 'empty': True}
+    rows = []
+    for i in range(steps):
+        my0 = ay_h[0] + hw * i / steps
+        my1 = ay_h[0] + hw * (i + 1) / steps
+        my_mid = (my0 + my1) / 2
+        # 模型v位置(沿高度) → uv v
+        pv = (my_mid - ay_h[0]) / hw
+        v_px = vmin + pv * (vmax - vmin)
+        v_px = max(0, min(H - 1, int(v_px * fy)))
+        # 采样该 v 行, 找 u 方向的实体(非透明)范围 → 映射回模型 au 轴
+        solid_cols = []
+        for uk in range(uv_w * 2):  # 沿 u 查若干点
+            u_px = umin + (uk / (uv_w * 2)) * (umax - umin)
+            px = max(0, min(W - 1, int(u_px * fx)))
+            if img.getpixel((px, v_px))[3] >= 25:
+                # 该 uv 点实体 → 映射回模型 au
+                frac = (u_px - umin) / (umax - umin) if (umax - umin) else 0
+                solid_cols.append(au[0] + frac * (au[1] - au[0]))
+        if solid_cols:
+            rows.append((my0, my1, min(solid_cols), max(solid_cols)))
+    return {'rows': rows, 'empty': len(rows) == 0}
+
+
 def face_pair_boxes(cube, img, W, H):
     """用户算法: 6面3对相对面, 每对生成1个box(法线轴=完整, 另两轴=两面实心区交集).
     返回 3 个候选 box (模型坐标), 供去重.

@@ -109,42 +109,74 @@ class VoxelGrid:
                         grid[x][y][z] = True
 
     def _mark_hollow(self, cube, grid, ox, oy, oz, w, h, d, vx0, vy0, vz0, vx1, vy1, vz1):
-        """面壳 cube: 只在实心程度高的面方向建薄壳碰撞, 其余镂空。
-        用纹理覆盖率(face_solid)判定哪些面真正渲染, 而非仅 tex 引用。"""
+        """面壳 cube: 映射筛实体 → 只对这个有效形状建薄壁碰撞。
+
+        两层(用户模型):
+          1. 映射: face_shape_rows 逐行读面纹理实体范围, 筛掉空气, 得"有效结构形状"
+             (如墙盒前/背墙 = 顶部梯形收窄 + 底部矩形全宽; 门洞行空气)。
+          2. 薄壳: 只对这些有效行建薄壁(厚度方向 1/16), 按行范围分段合并成 box。
+        不再建"整面等厚薄壁"(旧版没筛形状 → 南/北整条, 未反映梯形/开口)。
+
+        对 6 面分别处理。up(顶空)/无实体面跳过。
+        """
+        from face_coverage import face_shape_rows
         x0, y0, z0, x1, y1, z1 = cube_aabb(cube)
         thick = self.shell_thickness
-        shells = []
-        # 各面实心判定 (覆盖率>=0.5 = 该面渲染, 建薄壳; 否则镂空)
-        def is_solid(face):
-            return self._face_solid(cube, face) >= 0.5
-        # up/down: y 方向
-        if is_solid('up'):
-            shells.append((x0, y1 - thick, z0, x1, y1, z1))
-        if is_solid('down'):
-            shells.append((x0, y0, z0, x1, y0 + thick, z1))
-        # north/south: z 方向
-        if is_solid('north'):
-            shells.append((x0, y0, z0, x1, y1, z0 + thick))
-        if is_solid('south'):
-            shells.append((x0, y0, z1 - thick, x1, y1, z1))
-        # east/west: x 方向
-        if is_solid('east'):
-            shells.append((x1 - thick, y0, z0, x1, y1, z1))
-        if is_solid('west'):
-            shells.append((x0, y0, z0, x0 + thick, y1, z1))
+        # 面 → 该面厚度方向的轴范围(z/x/y) 用于薄壁
+        faces = {
+            'north': (z0, z0 + thick, (x0, x1), (y0, y1)),
+            'south': (z1 - thick, z1, (x0, x1), (y0, y1)),
+            'east':  (x1 - thick, x1, (z0, z1), (y0, y1)),
+            'west':  (x0, x0 + thick, (z0, z1), (y0, y1)),
+            'up':    (y1 - thick, y1, (x0, x1), (z0, z1)),
+            'down':  (y0, y0 + thick, (x0, x1), (z0, z1)),
+        }
+        for face, (nav_lo, nav_hi, u_ax, h_ax) in faces.items():
+            r = face_shape_rows(cube, face, self.tex_img, self.tex_w, self.tex_h,
+                                self.tex_uvw, self.tex_uvh, steps=8)
+            if r['empty']:
+                continue  # 该面无实体(顶面空) → 不建
+            # 把每行(高度区间 + u实体范围) 合并: 相邻行 u 范围相近(差<0.5)则归一段
+            def close(rng1, rng2):
+                return abs(rng1[0] - rng2[0]) < 0.5 and abs(rng1[1] - rng2[1]) < 0.5
+            segs = []
+            cur = None
+            for (my0, my1, u0, u1) in r['rows']:
+                if cur and close((cur[3], cur[4]), (u0, u1)):
+                    cur = (cur[0], my1, cur[2], u0, u1)  # 合并: 高度扩展, 范围取该行
+                else:
+                    if cur: segs.append(cur)
+                    cur = (my0, my1, face, u0, u1)
+            if cur: segs.append(cur)
+            for (my0, my1, f, u0, u1) in segs:
+                # 该段: 高度[my0,my1], u实体[u0,u1], 法线方向薄壁[nav_lo,nav_hi]
+                # 用该面的轴: nav 是厚度z/x/y, u_ax 是横向, h_ax=高度y
+                if face in ('east', 'west'):
+                    bx0, bx1 = nav_lo, nav_hi
+                    by0, by1 = my0, my1
+                    bz0, bz1 = u0, u1
+                elif face in ('north', 'south'):
+                    bx0, bx1 = u0, u1
+                    by0, by1 = my0, my1
+                    bz0, bz1 = nav_lo, nav_hi
+                else:  # up/down
+                    bx0, bx1 = u0, u1
+                    by0, by1 = nav_lo, nav_hi
+                    bz0, bz1 = my0, my1
+                self._fill_box(grid, ox, oy, oz, w, h, d,
+                               bx0, by0, bz0, bx1, by1, bz1)
 
-        for sh in shells:
-            sx0, sy0, sz0, sx1, sy1, sz1 = sh
-            svx0 = max(0, math.floor(sx0 * self.res) - ox)
-            svy0 = max(0, math.floor(sy0 * self.res) - oy)
-            svz0 = max(0, math.floor(sz0 * self.res) - oz)
-            svx1 = min(w, math.floor(sx1 * self.res) - ox)
-            svy1 = min(h, math.floor(sy1 * self.res) - oy)
-            svz1 = min(d, math.floor(sz1 * self.res) - oz)
-            for x in range(svx0, svx1):
-                for y in range(svy0, svy1):
-                    for z in range(svz0, svz1):
-                        grid[x][y][z] = True
+    def _fill_box(self, grid, ox, oy, oz, w, h, d, bx0, by0, bz0, bx1, by1, bz1):
+        svx0 = max(0, math.floor(bx0 * self.res) - ox)
+        svy0 = max(0, math.floor(by0 * self.res) - oy)
+        svz0 = max(0, math.floor(bz0 * self.res) - oz)
+        svx1 = min(w, math.floor(bx1 * self.res) - ox)
+        svy1 = min(h, math.floor(by1 * self.res) - oy)
+        svz1 = min(d, math.floor(bz1 * self.res) - oz)
+        for x in range(svx0, svx1):
+            for y in range(svy0, svy1):
+                for z in range(svz0, svz1):
+                    grid[x][y][z] = True
 
     def build_grid(self, cubes):
         """返回 (grid, origin) origin 是模型坐标到体素数组的偏移"""
