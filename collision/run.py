@@ -12,9 +12,90 @@
 import argparse
 import sys
 import os
+import json
 from generate import load_cubes, VoxelGrid, compress_voxels, to_java, format_boxlist
 from parse_model import all_bounds
 from visualize import render_plane, print_plane
+
+
+def deploy_collision(model_path, res=16, seg_count=6, allow_exposure=True, exclude=None,
+                     prefix=None, grid_args=None):
+    """库函数: 生成完整碰撞箱, 供 deploy/cli.py 唯一调用。
+
+    统一碰撞生成入口 —— 读贴图(纹理覆盖)/自动检测单多格/跨格切割/斜体分离/输出 Java。
+    返回 dict:
+      {
+        'boxes': 主碰撞 box 列表(模型坐标, 未切割),
+        'rotated': 斜体分离 box 列表,
+        'air': 空气暴露率(float),
+        'grid': 自动检测的切割边界 {axis: [cuts]},
+        'cells': {格子key: [box(局部坐标)]} (若跨格),
+        'java': 单格时的 Java Shapes.or 代码或 None,
+        'meshes_java': {格key: Java代码} (多格时),
+        'box_count': 主碰撞 box 数,
+      }
+    失败抛异常, 由调用方处理。
+    """
+    from parse_model import merge_overlapping_hollow_cubes, load_cubes as _lc
+    from multiblock import auto_detect_grid, parse_grid, split_all_boxes, to_local, compute_cell_origins
+    from optimize import solve_zero_exposure, compress_adaptive as _ca
+
+    cubes = _lc(model_path)
+    if exclude or prefix:
+        ex = set(n.strip() for n in (exclude or '').split(',') if n.strip())
+        cubes = [c for c in cubes if c['name'] not in ex and not (prefix and c['name'].startswith(prefix))]
+    merged = merge_overlapping_hollow_cubes(cubes)
+    if len(merged) < len(cubes):
+        cubes = merged
+
+    # 网格切割边界
+    grid = None
+    if grid_args:
+        grid = parse_grid(grid_args)
+    else:
+        g = auto_detect_grid(cubes)
+        grid = g if g else None
+
+    # 解析纹理图供面覆盖检测
+    tex_img, tex_w, tex_h = None, 0, 0
+    try:
+        from face_coverage import load_texture_from_bbmodel
+        if not str(model_path).lower().endswith('.json'):
+            tex_img, tex_w, tex_h = load_texture_from_bbmodel(model_path)
+    except Exception:
+        tex_img, tex_w, tex_h = None, 0, 0
+
+    if allow_exposure:
+        from generate import compress_adaptive
+        boxes, rotated = compress_adaptive(cubes, res=res, seg_count=seg_count,
+                                           skip_rotated_decor=True, tex_img=tex_img, tex_size=(tex_w, tex_h))
+        air = None
+    else:
+        boxes, air, nb = solve_zero_exposure(cubes, res=res, seg_count=seg_count, source=model_path)
+        rotated = []
+
+    result = {
+        'boxes': boxes,
+        'rotated': rotated,
+        'air': air,
+        'grid': grid,
+        'cells': None,
+        'java': None,
+        'meshes_java': {},
+        'box_count': len(boxes),
+    }
+
+    if grid:
+        bx = all_bounds(cubes)
+        model_min = {'x': bx[0], 'y': bx[1], 'z': bx[2]}
+        origins = compute_cell_origins(grid, model_min, {'x': bx[3], 'y': bx[4], 'z': bx[5]})
+        cells = split_all_boxes(boxes, grid)
+        result['cells'] = {k: [to_local(b, origins, grid) for b in cb] for k, cb in cells.items()}
+        result['meshes_java'] = {str(k): to_java(v) for k, v in cells.items()}
+    else:
+        result['java'] = to_java(boxes)
+
+    return result
 
 
 def to_java_facing(boxes):
