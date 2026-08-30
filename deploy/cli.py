@@ -20,8 +20,9 @@ import os
 import sys
 import json
 
-# 复用现有 collision 工具
+# 复用现有 collision 工具 + 通用配置
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'collision'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'common'))
 
 import analyzer
 import codegen
@@ -34,6 +35,10 @@ def main():
     ap.add_argument('--name', help='方块类名 (默认从文件名推断)')
     ap.add_argument('--no-fix', action='store_true', help='不自动修复')
     ap.add_argument('--out', help='生成的 Java 类输出目录', default=None)
+    # 实体模式: 生成"拉车实体+渲染器+RenderState"骨架 (独轮推车经验)
+    ap.add_argument('--entity', action='store_true',
+                    help='实体模式: 生成拉车实体/渲染器/RenderState 骨架')
+    ap.add_argument('--entity-id', help='实体注册 id (默认从文件名推断, 如 wheelbarrow)')
     args = ap.parse_args()
 
     if not os.path.exists(args.model):
@@ -69,10 +74,43 @@ def main():
     except Exception as e:
         print(f"  ⚠️ 验证器异常: {e}")
 
-    # 3. 生成 Block 类
+    # 3. 生成 Block 类 (或实体模式骨架)
+    if args.entity:
+        entity_id = args.entity_id or os.path.splitext(os.path.basename(args.model))[0]
+        entity_class = ''.join(w.capitalize() for w in entity_id.replace('-', '_').split('_') if w) + 'Entity'
+        renderer_class = entity_class.removesuffix('Entity') + 'Renderer'
+        rs_class = entity_class.removesuffix('Entity') + 'RenderState'
+        print(f"\n[实体骨架生成] {entity_class} + {renderer_class} + {rs_class}")
+        out_dir = args.out or '.'
+        os.makedirs(out_dir, exist_ok=True)
+        for cls_name, text in [
+            (entity_class, codegen.generate_entity_class(entity_class, entity_id)),
+            (renderer_class, codegen.generate_entity_renderer_class(renderer_class, entity_class,
+                                                                     f'{entity_id}_body', f'{entity_id}_wheel')),
+            (rs_class, codegen.generate_entity_render_state_class(rs_class, entity_class)),
+        ]:
+            with open(os.path.join(out_dir, cls_name + '.java'), 'w', encoding='utf-8') as f:
+                f.write(text)
+            print(f"  已写入: {cls_name}.java")
+        print("\n  提示: 还需手动 -- 注册实体/物品(wheel/body/wheel_split/full_no_wheel)/items JSON/语言")
+        return
+
     class_name = args.name or infer_class_name(args.model)
     print(f"\n[代码生成] {class_name}.java")
     code = codegen.generate(analysis, class_name)
+
+    # 闭环: 用 run.py 的碰撞箱逻辑生成真实 Shapes 代码, 替换 SHAPE_BASE 占位
+    shape_java = generate_shape_java(model, args)
+    if shape_java and 'SHAPE_BASE = box(0, 0, 0, 16, 16, 16)' in code:
+        # 保留变量名, 只替换右侧 box(...) 为 Shapes.or(...)
+        code = code.replace('SHAPE_BASE = box(0, 0, 0, 16, 16, 16)', 'SHAPE_BASE = ' + shape_java)
+        code = code.replace('// TODO: 用 tools/collision/run.py --facing 生成碰撞箱后替换', '')
+        print(f"  ✓ 碰撞箱已生成并填入 (替换 SHAPE_BASE 占位)")
+    elif shape_java and 'SHAPE = box(0, 0, 0, 16, 16, 16)' in code:
+        code = code.replace('SHAPE = box(0, 0, 0, 16, 16, 16)', 'SHAPE = ' + shape_java)
+        code = code.replace('// TODO: 用 tools/collision 生成每格碰撞箱后替换', '')
+        print(f"  ✓ 碰撞箱已生成并填入 (替换 SHAPE 占位)")
+
     if args.out:
         os.makedirs(args.out, exist_ok=True)
         out_path = os.path.join(args.out, class_name + '.java')
@@ -86,7 +124,12 @@ def main():
     # 4. 部署清单
     print("\n" + "=" * 60)
     print("部署清单 (还需手动完成):")
-    checklist = generate_checklist(analysis, class_name)
+
+    # 若碰撞箱已填入, 清单里那条碰撞箱项改为完成/移除
+    if shape_java:
+        checklist = [i for i in generate_checklist(analysis, class_name) if 'generate' not in i and 'run.py' not in i and '碰撞箱' not in i]
+    else:
+        checklist = generate_checklist(analysis, class_name)
     for item in checklist:
         print(f"  ☐ {item}")
     print("=" * 60)
@@ -98,7 +141,36 @@ def infer_class_name(path):
     return ''.join(w.capitalize() for w in base.replace('-', '_').split('_') if w) + 'Block'
 
 
+def generate_shape_java(model, args):
+    """从模型生成真实碰撞箱的 Shapes.java 代码 (复用 tools/collision 逻辑)。
+    返回 "private static final VoxelShape SHAPE_BASE = Shapes.or(...);" 代码块,
+    失败返回 None (工具报错时留占位, 不阻断生成)。"""
+    try:
+        import sys as _sys
+        _sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'collision'))
+        from parse_model import load_cubes, all_bounds
+        from generate import compress_adaptive, to_java
+
+        # 保存模型文件到临时 (load_cubes 需路径, write 后必须 close 再传)
+        import tempfile, json as _json
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.json', mode='w', encoding='utf-8')
+        _json.dump(model, tmp)
+        tmp.close()
+        cubes = load_cubes(tmp.name)
+        boxes, rotated = compress_adaptive(cubes)
+
+        # 主碰撞箱 java 代码 (归一化坐标)
+        body = to_java(boxes)
+        os.unlink(tmp.name)
+        return body
+    except Exception as e:
+        print(f"  ⚠️ 碰撞箱生成失败(留占位): {e}")
+        return None
+
+
 def generate_checklist(analysis, class_name):
+    import config as _cfg
+    mod_id = _cfg.get_mod_id() or 'example_mod'
     a = analysis
     items = [
         f"注册方块: ModBlocks.{class_name.removesuffix('Block').upper()} (BlockBehaviour.Properties.ofFullCopy(Blocks.OAK_PLANKS).noOcclusion())",
@@ -106,8 +178,8 @@ def generate_checklist(analysis, class_name):
         "注册创造标签: ModCreativeTabs.displayItems",
         "语言: ModLanguageProvider addBlock (英文, 中文)",
         "loot 表: ModBlockLootProvider dropSelf + 运行 runClientData",
-        f"blockstate: src/main/resources/assets/pastoral_home/blockstates/{a['base_name']}.json",
-        f"item model: src/main/resources/assets/pastoral_home/items/{a['base_name']}.json",
+        f"blockstate: src/main/resources/assets/{mod_id}/blockstates/{a['base_name']}.json",
+        f"item model: src/main/resources/assets/{mod_id}/items/{a['base_name']}.json",
         "运行 ./gradlew compileJava 验证编译",
     ]
     if a['kind'] == 'multiblock':

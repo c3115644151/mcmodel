@@ -20,15 +20,25 @@ from parse_model import load_cubes, cube_aabb
 class VoxelGrid:
     """体素网格: 每个 cube 占据的轴对齐体素"""
 
-    def __init__(self, resolution=16):
+    def __init__(self, resolution=16, tex_img=None, tex_size=(0,0)):
         self.res = resolution          # 每单位体素数
         self.voxel_size = 1.0 / resolution
         self.shell_thickness = 1.0 / resolution  # 面壳厚度(默认1/16格)
+        self.tex_img = tex_img        # 纹理图 (RGBA), 用于面覆盖率检测
+        self.tex_w, self.tex_h = tex_size
+
+    def _face_solid(self, cube, face):
+        """该面实心占比 (读纹理). 无纹理图则退回 tex 引用判断."""
+        if self.tex_img is not None:
+            from face_coverage import face_solid_ratio
+            return face_solid_ratio(cube, face, self.tex_img, self.tex_w, self.tex_h)
+        from parse_model import has_face_texture
+        return 1.0 if has_face_texture(cube, face) else 0.0
 
     def mark_cube(self, cube, grid, ox, oy, oz, w, h, d):
         """把一个 cube 占据的体素标记进 grid。
         对旋转 cube 用逆旋转+中心点采样判断体素是否真在旋转体内(细粒度斜切面)。
-        对面壳 cube(部分面无纹理)只在有纹理方向建薄壳碰撞。"""
+        对面壳/局部镂空 cube(某面覆盖率低)只在该实心方向建薄壳碰撞。"""
         x0, y0, z0, x1, y1, z1 = cube_aabb(cube)
         vx0 = max(0, int(round(x0 * self.res)) - ox)
         vy0 = max(0, int(round(y0 * self.res)) - oy)
@@ -38,10 +48,22 @@ class VoxelGrid:
         vz1 = min(d, int(round(z1 * self.res)) - oz)
 
         rot = cube.get('rotation')
-        # 面壳识别: 部分面无纹理 → 薄壳碰撞
-        from parse_model import is_hollow_cube, textured_faces, has_face_texture
-        if is_hollow_cube(cube) and rot is None:
+        # 面壳识别: 某面覆盖率低(镂空/局部空气) → 只建实心方向薄壳
+        from parse_model import is_hollow_cube
+        # 用纹理覆盖率判断是否面壳(替代只看tex引用)
+        solid_low = [f for f in ('north','east','south','west','up','down') if self._face_solid(cube, f) < 0.5]
+        is_hollow = is_hollow_cube(cube) or len(solid_low) >= 2
+        # 局部镂空面: 该面覆盖率在 (0,1) 之间(不是全实心也不是全空) → 需逐体素重建
+        has_partial = any(0.0 < self._face_solid(cube, f) < 1.0
+                          for f in ('north','east','south','west','up','down'))
+        if is_hollow and rot is None:
             self._mark_hollow(cube, grid, ox, oy, oz, w, h, d, vx0, vy0, vz0, vx1, vy1, vz1)
+            return
+        if rot is None and self.tex_img is not None and has_partial:
+            # 有局部镂空面(如箱盖楔形) → 按"对面相交+UV映射"逐体素重建
+            from face_coverage import rebuild_voxels_from_texture
+            rebuild_voxels_from_texture(cube, self.tex_img, self.tex_w, self.tex_h,
+                                        grid, ox, oy, oz, w, h, d, self.res)
             return
         if rot is None:
             # 非旋转实心: 快路径
@@ -74,28 +96,29 @@ class VoxelGrid:
                         grid[x][y][z] = True
 
     def _mark_hollow(self, cube, grid, ox, oy, oz, w, h, d, vx0, vy0, vz0, vx1, vy1, vz1):
-        """面壳 cube: 只在有纹理的面方向建薄壳碰撞(厚度=shell_thickness), 其余镂空。
-        有纹理面 → 该方向薄层; 无纹理面 → 该方向镂空。"""
-        from parse_model import has_face_texture
+        """面壳 cube: 只在实心程度高的面方向建薄壳碰撞, 其余镂空。
+        用纹理覆盖率(face_solid)判定哪些面真正渲染, 而非仅 tex 引用。"""
         x0, y0, z0, x1, y1, z1 = cube_aabb(cube)
         thick = self.shell_thickness
-        # 各面的薄壳范围: (对应轴的 lo/hi 边界, 薄壳在法线方向向内厚 thick)
         shells = []
+        # 各面实心判定 (覆盖率>=0.5 = 该面渲染, 建薄壳; 否则镂空)
+        def is_solid(face):
+            return self._face_solid(cube, face) >= 0.5
         # up/down: y 方向
-        if has_face_texture(cube, 'up'):
-            shells.append((x0, y1 - thick, z0, x1, y1, z1))     # up 面薄层 (y1-thick ~ y1)
-        if has_face_texture(cube, 'down'):
-            shells.append((x0, y0, z0, x1, y0 + thick, z1))     # down 面薄层
+        if is_solid('up'):
+            shells.append((x0, y1 - thick, z0, x1, y1, z1))
+        if is_solid('down'):
+            shells.append((x0, y0, z0, x1, y0 + thick, z1))
         # north/south: z 方向
-        if has_face_texture(cube, 'north'):
-            shells.append((x0, y0, z0, x1, y1, z0 + thick))     # north 面薄层 (z0 ~ z0+thick)
-        if has_face_texture(cube, 'south'):
-            shells.append((x0, y0, z1 - thick, x1, y1, z1))     # south 面薄层
+        if is_solid('north'):
+            shells.append((x0, y0, z0, x1, y1, z0 + thick))
+        if is_solid('south'):
+            shells.append((x0, y0, z1 - thick, x1, y1, z1))
         # east/west: x 方向
-        if has_face_texture(cube, 'east'):
-            shells.append((x1 - thick, y0, z0, x1, y1, z1))     # east 面薄层
-        if has_face_texture(cube, 'west'):
-            shells.append((x0, y0, z0, x0 + thick, y1, z1))     # west 面薄层
+        if is_solid('east'):
+            shells.append((x1 - thick, y0, z0, x1, y1, z1))
+        if is_solid('west'):
+            shells.append((x0, y0, z0, x0 + thick, y1, z1))
 
         for sh in shells:
             sx0, sy0, sz0, sx1, sy1, sz1 = sh
@@ -124,8 +147,13 @@ class VoxelGrid:
         w = int(bx1 * self.res) - ox
         h = int(by1 * self.res) - oy
         d = int(bz1 * self.res) - oz
-        if w <= 0 or h <= 0 or d <= 0:
-            raise ValueError("模型范围无效")
+        # 容忍零宽薄元素 (如 z1==z0 的平面装饰): clamp 到最小 1
+        if w <= 0:
+            w = 1
+        if h <= 0:
+            h = 1
+        if d <= 0:
+            d = 1
         grid = [[[False] * d for _ in range(h)] for __ in range(w)]
         for c in cubes:
             self.mark_cube(c, grid, ox, oy, oz, w, h, d)
@@ -192,16 +220,21 @@ def compress_voxels(grid, origin, w, h, d, res):
     return boxes
 
 
-def to_java(boxes):
-    """生成 Java Shapes.or(box(...)) 代码"""
+def to_java(boxes, normalize=True):
+    """生成 Java Shapes.or(box(...)) 代码。
+    normalize=True: 坐标 ÷16 归一化到 0~1 (Shapes.box 需要)。
+    normalize=False: 原始模型坐标 (0~16)。"""
     lines = []
     if not boxes:
         return "Shapes.empty()"
     lines.append("Shapes.or(")
     for i, b in enumerate(boxes):
-        x0, y0, z0, x1, y1, z1 = b
+        if normalize:
+            x0, y0, z0, x1, y1, z1 = [v / 16.0 for v in b]
+        else:
+            x0, y0, z0, x1, y1, z1 = b
         comma = "," if i < len(boxes) - 1 else ""
-        lines.append(f"        box({x0:.1f}, {y0:.1f}, {z0:.1f}, {x1:.1f}, {y1:.1f}, {z1:.1f}){comma}")
+        lines.append(f"        Shapes.box({x0:.4f}, {y0:.4f}, {z0:.4f}, {x1:.4f}, {y1:.4f}, {z1:.4f}){comma}")
     lines.append(")")
     return "\n".join(lines)
 
@@ -255,26 +288,130 @@ def _is_gradient(cube, res=8):
     return None
 
 
+def segment_rotated(cube, seg_count=3, res=16):
+    """把旋转 cube 沿最优轴分成 seg_count 段阶梯碰撞箱。
+    每段用体素中心逆旋转采样, 得到该段的紧凑 AABB (空气率远小于整体外接盒)。
 
-def compress_adaptive(cubes, res=16, seg_count=3):
-    """自适应合并: 旋转 cube 用旋转后外接 AABB 单 box 覆盖(牺牲空气率换完整覆盖),
-    其他 cube 精确合并。
+    防护 (薄元素/退化段):
+    - AABB 直径 < 3 单位 (薄条/面片): 直接返回外接 AABB 单 box (分段无意义)
+    - 段无命中体素: 跳过
+    - 段边界非法 (负数/超出 AABB): 夹紧
+    返回 [(x0,y0,z0,x1,y1,z1)] — 至少 1 段 (兜底外接 AABB)。
+    """
+    from parse_model import inverse_rotate_point
+    aabb = cube_aabb(cube)
+    x0, y0, z0, x1, y1, z1 = aabb
+    # 薄元素防护: 最小边 < 3 单位 → 分段没意义, 直接外接盒
+    if min(x1 - x0, y1 - y0, z1 - z0) < 3.0:
+        return [aabb]
+    rot = cube['rotation']
+    origin = rot['origin']
+    frm = cube['from']
+    to = cube['to']
+    f_min = (min(frm[0], to[0]), min(frm[1], to[1]), min(frm[2], to[2]))
+    f_max = (max(frm[0], to[0]), max(frm[1], to[1]), max(frm[2], to[2]))
+    # 体素命中标记: 对 AABB 内所有体素中心先采样一次 (逆旋转判定)
+    hits = {}
+    for xi in range(int(round(x0 * res)), int(round(x1 * res))):
+        for yi in range(int(round(y0 * res)), int(round(y1 * res))):
+            for zi in range(int(round(z0 * res)), int(round(z1 * res))):
+                mx = (xi + 0.5) / res
+                my = (yi + 0.5) / res
+                mz = (zi + 0.5) / res
+                lp = inverse_rotate_point([mx, my, mz], rot['angles'], origin)
+                if (f_min[0] <= lp[0] <= f_max[0] and
+                        f_min[1] <= lp[1] <= f_max[1] and
+                        f_min[2] <= lp[2] <= f_max[2]):
+                    hits[(xi, yi, zi)] = True
+    if not hits:
+        return [aabb]
+    # 逐轴试分段, 选总空气率最小的轴
+    def segs_for_axis(axis):
+        """沿 axis 切 seg_count 段, 每段取命中体素紧凑 AABB(对体素边界对齐)"""
+        lo = aabb[axis]
+        hi = aabb[axis + 3]
+        step = (hi - lo) / seg_count
+        out = []
+        for s in range(seg_count):
+            s_lo = lo + s * step
+            s_hi = lo + (s + 1) * step
+            seg_hits = [k for k in hits if s_lo <= k[axis] / res < s_hi]
+            if not seg_hits:
+                continue
+            sxs = [k[0] for k in seg_hits]; sys_ = [k[1] for k in seg_hits]; szs = [k[2] for k in seg_hits]
+            # +1 是右端开 (体素单元右边界)
+            out.append((min(sxs) / res, min(sys_) / res, min(szs) / res,
+                        (max(sxs) + 1) / res, (max(sys_) + 1) / res, (max(szs) + 1) / res))
+        return out
+    best = None
+    for axis in range(3):
+        segs = segs_for_axis(axis)
+        if not segs:
+            continue
+        box_vol = sum((b[3] - b[0]) * (b[4] - b[1]) * (b[5] - b[2]) for b in segs)
+        true_vol = len(hits) / (res * res * res)
+        air = (box_vol - true_vol) / box_vol if box_vol else 1.0
+        if best is None or air < best[0]:
+            best = (air, segs)
+    if best is None:
+        return [aabb]
+    return best[1]
 
-    设计权衡(用户反馈): 斜向元素(如绕Y轴旋转的木条)碰撞箱无法斜向,
-    若用未旋转的轴对齐 box 会盖不住斜向伸出的角; 若沿 y 多段贴合则对
-    绕 Y 旋转的水平长条无效(旋转在水平面)。因此优先单 box 外接覆盖,
-    宁可多包空气也要完整包住模型。后续要精细可调 seg_count/手动改。
-    返回 [(x0,y0,z0,x1,y1,z1)] 模型坐标(全局)。"""
+
+def dedupe_boxes(boxes, res=16):
+    """按体素网格量化去重 (嵌套双壳/重合元素在 res 分辨率下归并出相同 box)。"""
+    seen = set()
+    out = []
+    for b in boxes:
+        key = tuple(round(v / (1.0 / res)) for v in b)
+        if key not in seen:
+            seen.add(key)
+            out.append(b)
+    return out
+
+
+def compress_adaptive(cubes, res=16, seg_count=3, skip_rotated_decor=True):
+    """自适应合并: 非旋转 cube 精确体素化合并; 旋转 cube 处理。
+
+    【斜体处理】skip_rotated_decor=True (默认 — 报备模式):
+    非轴向旋转元素 (22.5°/45°/135° 等) 尝试分段贴合 (segment_rotated, 沿斜度阶梯),
+    得到低空气率的分段结果。若分段拟合后仍空气率过高 (>25%), 分离到 rotated 报备。
+
+    返回 (main_boxes, rotated_boxes)。
+    - main: 箱体/箱盖/屋脊 精确 + 斜体分段贴合(分段拟合优时)
+    - rotated: 仅空气率过高的斜体(外接 AABB 报备, 由人类决定)
+    轴向 (0/90/180/270) 旋转并入 main。
+    """
     from parse_model import cube_aabb
-    result = []
+    main = []
+    rotated = []
     for cube in cubes:
         if cube.get('rotation'):
-            # 旋转元素: 直接用旋转后 8 角点的外接 AABB (单 box, 完整覆盖)
-            x0, y0, z0, x1, y1, z1 = cube_aabb(cube)
-            result.append((x0, y0, z0, x1, y1, z1))
+            r = cube['rotation']
+            ang = max(abs(a) for a in r.get('angles', [0, 0, 0])) % 180
+            if ang == 0:
+                ang = abs(r.get('raw', {}).get('angle', 0)) % 180
+            if ang not in (0, 90):
+                # 斜体: 分段贴合 (沿斜度阶梯, 低空气率)
+                segs = segment_rotated(cube, seg_count=seg_count, res=res)
+                # 评估分段空气率
+                seg_vol = sum((s[3]-s[0])*(s[4]-s[1])*(s[5]-s[2]) for s in segs)
+                if segs:
+                    vg = VoxelGrid(res); g,o,dims = vg.build_grid([cube])
+                    tv = sum(1 for x in range(dims[0]) for y in range(dims[1]) for z in range(dims[2]) if g[x][y][z])
+                    seg_air = (seg_vol - tv/(res*res*res)) / seg_vol if seg_vol else 1.0
+                else:
+                    seg_air = 1.0
+                if seg_air <= 0.25 or skip_rotated_decor is False:
+                    # 分段贴合优 → 并入 main
+                    main.extend(segs if segs else [cube_aabb(cube)])
+                else:
+                    # 分段拟合空气率过高 → 分离报备 (外接 AABB)
+                    rotated.append(cube_aabb(cube))
+                continue
+            main.append(cube_aabb(cube))
         else:
-            # 非旋转: 精确合并
             vg = VoxelGrid(res)
             g, o, dims = vg.build_grid([cube])
-            result.extend(compress_voxels(g, o, dims[0], dims[1], dims[2], res))
-    return result
+            main.extend(compress_voxels(g, o, dims[0], dims[1], dims[2], res))
+    return dedupe_boxes(main, res), dedupe_boxes(rotated, res)

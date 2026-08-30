@@ -142,8 +142,9 @@ def analyze(path):
 
 def format_analysis(a):
     lines = [f"模型: {os.path.basename(a['path'])}"]
-    kind_name = {'single': '单格方块', 'multiblock': f'多方块 {a[\"cells\"][0]}×{a[\"cells\"][1]}×{a[\"cells\"][2]}',
-                 'variant': f'多变体 ×{a[\"variant_count\"]}'}[a['kind']]
+    cells = a['cells']
+    kind_name = {'single': '单格方块', 'multiblock': f'多方块 {cells[0]}×{cells[1]}×{cells[2]}',
+                 'variant': f'多变体 ×{a["variant_count"]}'}[a['kind']]
     lines.append(f"类型: {kind_name}")
     b = a['bounds']
     lines.append(f"包围盒: x[{b[0]:.1f},{b[3]:.1f}] y[{b[1]:.1f},{b[4]:.1f}] z[{b[2]:.1f},{b[5]:.1f}]")

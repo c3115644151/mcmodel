@@ -126,8 +126,12 @@ def load_cubes(source: str):
 
 
 def has_face_texture(cube, face):
-    """判断 cube 的某面是否有有效纹理(uv 非零且 tex 非空)。
-    无纹理的面 = 该方向镂空(不渲染)。"""
+    """判断 cube 的某面是否有有效纹理(uv 非零 且 tex 非空)。
+    无纹理的面 = 该方向镂空(不渲染)。
+
+    注意: BB 导出 Java 模型时 up/down 面 UV 常为负宽(纹理坐标反向), 属正常渲染,
+    不能凭 UV 正负判"未画"。真正的"面剔除"需读面是否存在/被激活(如 get_face_material_instances),
+    或面 UV 四点全同(退化)。此处仅以「tex 空 或 uv 全 0」判未画。"""
     fd = cube.get('faces', {}).get(face)
     if not fd:
         return False
@@ -135,8 +139,9 @@ def has_face_texture(cube, face):
     tex = fd.get('texture')
     if tex is None:
         return False
-    if isinstance(uv, list) and len(uv) == 4 and all(v == 0 for v in uv):
-        return False
+    if isinstance(uv, list) and len(uv) == 4:
+        if all(v == 0 for v in uv):
+            return False
     return True
 
 

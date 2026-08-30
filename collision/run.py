@@ -50,11 +50,15 @@ def main():
     ap = argparse.ArgumentParser(description='碰撞箱一键生成 + 可视化')
     ap.add_argument('model', help='bbmodel 或 model JSON 路径')
     ap.add_argument('--res', type=int, default=16, help='体素分辨率 (每单位体素数, 默认16)')
-    ap.add_argument('--seg-count', type=int, default=3, help='斜面元素分段数 (默认3, 减少box和黑线)')
+    ap.add_argument('--seg-count', type=int, default=6, help='斜面元素分段数 (默认6, 追0暴露兼顾box数)')
     ap.add_argument('--max-boxes', type=int, default=None, help='需求: 最大 box 数, 工具自动算分段数')
     ap.add_argument('--max-air', type=float, default=None, help='需求: 最大空气率(%), 工具自动算分段数')
     ap.add_argument('--exclude', default='', help='排除的 cube 名称, 逗号分隔 (如握把,装饰)')
     ap.add_argument('--prefix', default='', help='排除名称前缀 (如 noCollision_)')
+    ap.add_argument('--zero-exposure', action='store_true',
+                    help='默认: 追空气暴露率 0% (斜体整块填充覆盖, 宁可盖住下方空气也要无暴露)')
+    ap.add_argument('--allow-exposure', action='store_true',
+                    help='可选: 允许空气暴露 (斜体不碰/分离, 换取更少 box 和更贴轮廓, 但会有暴露)')
     ap.add_argument('--grid', action='append', default=[], help='手动指定格子边界, 如 x:0 或 x:-8,8')
     ap.add_argument('--visualize', action='store_true', help='生成后显示三视图叠加')
     ap.add_argument('--vres', type=int, default=2, help='可视化分辨率')
@@ -122,20 +126,30 @@ def main():
 
     # 自适应合并: 支持需求模式(max-boxes/max-air) 或 指定分段数
     from generate import compress_adaptive
+    rotated_boxes = []
     if args.max_boxes or args.max_air:
         # 需求模式: 扫描分段, 按约束选最优
         from optimize import scan_options, choose_option
         options = scan_options(cubes, 8)
         seg, boxes, nb, air = choose_option(options, args.max_boxes, args.max_air)
+        rotated_boxes = []
         print(f"[需求] max_boxes={args.max_boxes}, max_air={args.max_air} → 分段{seg}, {nb} box, 空气{air:.1f}%")
         print("  可选方案:")
         for s, b, n, a in options:
             mark = ' ← 选中' if s == seg else ''
             print(f"    分段{s}: {n} box, 空气 {a:.1f}%{mark}")
+    elif args.allow_exposure:
+        # 可选: 允许暴露 (斜体不碰/分离, box 少贴轮廓, 但有暴露)
+        seg_count = args.seg_count
+        boxes, rotated_boxes = compress_adaptive(cubes, res=args.res, seg_count=seg_count, skip_rotated_decor=True)
+        print(f"[允许暴露] 斜体分离/不碰, 主碰撞贴合非斜体 ({len(boxes)} box)")
+        if rotated_boxes:
+            print(f"  ⚠️ 分离 {len(rotated_boxes)} 个斜角碰撞箱 (外接空气大):")
     else:
-        seg_count = 3 if not args.seg_count else args.seg_count
-        boxes = compress_adaptive(cubes, res=args.res, seg_count=seg_count)
-        print(f"[自适应] 斜腿等斜面分 {seg_count} 段, 其余精确贴合 ({len(boxes)} box)")
+        # 默认: 基于纹理覆盖检测, 对实际渲染结构体素化 (消除空气暴露)
+        from optimize import solve_zero_exposure
+        boxes, air, nb = solve_zero_exposure(cubes, res=args.res, seg_count=args.seg_count, source=args.model)
+        print(f"[默认 0暴露] 纹理覆盖检测 → {nb} box, 空气暴露率 {air:.2f}%")
 
     if grid:
         # 多格: 切割输出
@@ -163,6 +177,12 @@ def main():
         else:
             print("\n=== Java 代码 (粘贴到 Block 类) ===")
             print(to_java(boxes))
+
+        # ROTATED_EXTRA: 斜角碰撞箱代码单独提供 (AI 决定是否并入, 如 cargo 必要碰撞)
+        if rotated_boxes:
+            print("\n=== ROTATED_EXTRA (斜角碰撞箱, 非轴向 45°/135°, 外接空气大) ===")
+            print("# 默认不并入主碰撞。若该斜杆是必需碰撞(货物/实体要支撑), 把下面 Shapes.or 并入 SHAPE:")
+            print(to_java(rotated_boxes))
 
     # 可视化
     if args.visualize:

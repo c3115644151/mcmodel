@@ -14,25 +14,86 @@
 import argparse
 import sys
 import os
-from parse_model import load_cubes, merge_overlapping_hollow_cubes, all_bounds
+from parse_model import load_cubes, merge_overlapping_hollow_cubes, all_bounds, cube_aabb
 from generate import VoxelGrid, compress_voxels, compress_adaptive
 
 
 def calc_air(grid, origin, w, h, d, res, boxes):
-    """计算 box 覆盖 vs 真实占据 的空气率。
-    用 box 体积估算(每个 box 的体素体积 - 真实占据体积), 避免逐体素标记。"""
-    true_vol = sum(1 for x in range(w) for y in range(h) for z in range(d) if grid[x][y][z])
-    box_vol = 0
-    for b in boxes:
-        x0 = int(b[0] * res - origin[0]); y0 = int(b[1] * res - origin[1]); z0 = int(b[2] * res - origin[2])
-        x1 = int(b[3] * res - origin[0]); y1 = int(b[4] * res - origin[1]); z1 = int(b[5] * res - origin[2])
-        box_vol += max(0, x1 - x0) * max(0, y1 - y0) * max(0, z1 - z0)
-    if box_vol == 0:
+    """空气暴露率 = 碰撞箱体积 超出 模型渲染体积 的比例 (你的定义)。
+
+    正确基准 (统一模型坐标, 逐体素):
+      - 模型渲染体积 = 真几何占据体素数 (grid 中为真的体素)      → render_vol
+      - 碰撞箱体积     = 被任何 box 覆盖的体素数 (box 盖住的体素) → coll_vol
+      - 暴露率 = (coll_vol - render_vol) / render_vol * 100
+        碰撞箱 > 渲染 = 多盖了不存在的空气 = 暴露。
+
+    air > 0: 碰撞箱盖多了(空气暴露); air = 0: 完全贴合; 若有漏(<0)另计。
+    """
+    render_vol = 0
+    coll_vol = 0
+    for x in range(w):
+        for y in range(h):
+            for z in range(d):
+                mx = (x + origin[0]) / res
+                my = (y + origin[1]) / res
+                mz = (z + origin[2]) / res
+                in_geom = grid[x][y][z]
+                in_box = any(b[0] <= mx < b[3] and b[1] <= my < b[4] and b[2] <= mz < b[5] for b in boxes)
+                if in_geom:
+                    render_vol += 1
+                if in_box:
+                    coll_vol += 1
+    if render_vol == 0:
         return 0.0
-    return (box_vol - true_vol) / box_vol * 100
+    return (coll_vol - render_vol) / render_vol * 100
 
 
-def scan_options(cubes, res=8):
+def solve_zero_exposure(cubes, res=16, seg_count=6, source=None):
+    """默认求解: 基于纹理覆盖检测, 只对实际渲染结构做体素化生成碰撞箱。
+
+    思路 (纹理覆盖驱动):
+      - 从 bbmodel 源读内嵌纹理图 (Pillow)
+      - VoxelGrid.mark_cube 用面覆盖率判定: 高覆盖=实心(建薄壳/实心), 低覆盖=镂空(空气)
+      - 这样"只画部分纹理/局部透明"的 cube 不再按 AABB 全填, 消除空气暴露
+
+    返回 (boxes, air%, box_count)。
+    """
+    from generate import VoxelGrid, compress_voxels, dedupe_boxes
+
+    # 加载纹理图 (Pillow) 供面覆盖检测
+    tex_img, tex_w, tex_h = None, 0, 0
+    if source:
+        try:
+            from face_coverage import load_texture_from_bbmodel
+            tex_img, tex_w, tex_h = load_texture_from_bbmodel(source)
+        except Exception:
+            tex_img, tex_w, tex_h = None, 0, 0
+
+    # 排除斜体 + 跨格(屋脊等 x/z 超出16的横杆单独处理), 其余按"面投影生成box"
+    from face_coverage import face_pair_boxes, load_texture_from_bbmodel
+    boxes = []
+    for c in cubes:
+        ang = max(abs(a) for a in c['rotation']['angles']) % 180 if c.get('rotation') else 0
+        if c.get('rotation') and ang not in (0, 90):
+            continue  # 斜体: 不参与碰撞
+        a = cube_aabb(c)
+        if (a[3]-a[0]) >= 16 or (a[5]-a[2]) >= 16 or (a[4]-a[1]) >= 16:
+            # 跨格/超高(如屋脊 x-1~17): 保留 AABB (跨格不适合面投影)
+            boxes.append(a)
+            continue
+        cands = [b for b in face_pair_boxes(c, tex_img, tex_w, tex_h) if b]
+        if cands:
+            boxes.extend(cands)
+        else:
+            boxes.append(a)   # 兜底: 面投影失败用 AABB
+    boxes = dedupe_boxes(boxes, res)
+    # 空气暴露率: 用体素化真几何 vs box 覆盖
+    vg = VoxelGrid(res, tex_img=tex_img, tex_size=(tex_w, tex_h))
+    grid, origin, (w, h, d) = vg.build_grid(cubes)
+    air = calc_air(grid, origin, w, h, d, res, boxes)
+    return boxes, air, len(boxes)
+
+
     """扫描不同分段数, 返回 [(seg_count, boxes, box_count, air_rate), ...]
     用 res=8 扫描(快), 真实体积只算一次。"""
     # 预计算真实占据体积(一次)
@@ -41,15 +102,15 @@ def scan_options(cubes, res=8):
     true_vol = sum(1 for x in range(w) for y in range(h) for z in range(d) if grid[x][y][z])
     options = []
     for seg in range(1, 9):
-        boxes = compress_adaptive(cubes, res=res, seg_count=seg)
-        box_vol = _box_vol(boxes, res, origin)
-        air = (box_vol - true_vol) / box_vol * 100 if box_vol else 0
-        options.append((seg, boxes, len(boxes), air))
+        # skip_rotated_decor=False: 需求模式要评估分段拟合空气率 (旋转元素也分段)
+        main, rotated = compress_adaptive(cubes, res=res, seg_count=seg, skip_rotated_decor=False)
+        air = calc_air(grid, origin, w, h, d, res, main)
+        options.append((seg, main, len(main), air))
     return options
 
 
 def _box_vol(boxes, res, origin):
-    """box 列表的总体积(体素)。"""
+    """box 列表的总体积(体素)。(遗留函数, 保留兼容)"""
     total = 0
     for b in boxes:
         x0 = int(b[0] * res - origin[0]); y0 = int(b[1] * res - origin[1]); z0 = int(b[2] * res - origin[2])

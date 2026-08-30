@@ -80,12 +80,12 @@ def compute_cell_origins(grid, model_min, model_max):
         cuts = grid.get(axis, [])
         mn = model_min[axis]
         if not cuts:
-            origins[axis] = [mn]  # 单格, 原点 = 模型最小值
+            # 该轴单格: 原点对齐 MC 方块局部 0, 不是模型 AABB min
+            origins[axis] = [0.0]
             continue
-        # 格子边界序列: [mn, cuts[0], cuts[1], ..., cuts[-1], mx]
-        bounds = [mn] + cuts
-        # 每个格子的原点 = 该格下界
-        origins[axis] = bounds
+        import math
+        cell0 = 16.0 * math.floor(mn / 16.0)
+        origins[axis] = [cell0] + [float(c) for c in cuts]
     return origins
 
 
@@ -149,7 +149,13 @@ def to_local(box, origins, grid):
     ox = _origin_for(cx, origins['x'], grid.get('x', []))
     oy = _origin_for(cy, origins['y'], grid.get('y', []))
     oz = _origin_for(cz, origins['z'], grid.get('z', []))
-    return (x0 - ox, y0 - oy, z0 - oz, x1 - ox, y1 - oy, z1 - oz)
+    # MC VoxelShape 必须在该格 0~16。切割浮点误差/跨格外接可能略超, clamp。
+    def clamp16(v):
+        return max(0.0, min(16.0, v))
+    return (
+        clamp16(x0 - ox), clamp16(y0 - oy), clamp16(z0 - oz),
+        clamp16(x1 - ox), clamp16(y1 - oy), clamp16(z1 - oz),
+    )
 
 
 def _origin_for(coord, origins, cuts):

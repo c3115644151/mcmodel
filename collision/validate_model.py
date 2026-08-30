@@ -24,7 +24,20 @@ import argparse
 # MC element rotation 只允许 -45/-22.5/0/22.5/45
 VALID_ROTATION_ANGLES = {-45.0, -22.5, 0.0, 22.5, 45.0}
 # 方块合法坐标范围
-MIN_COORD, MAX_COORD = -16.0, 32.0
+# 26.1 实际接受超 [-16,32] 的坐标 (水井 y到47 先例正常渲染)。
+# CuboidModelElement 的 MIN/MAX_EXTENT 仅作烘焙参考, 非硬性崩溃线。
+MIN_COORD, MAX_COORD = -16.0, 48.0
+
+
+def _model_max_span(model):
+    """模型 3 轴最大跨度 (单位) — 用于 GUI scale 计算"""
+    xs, ys, zs = [], [], []
+    for e in model.get('elements', []):
+        f, t = e.get('from', [0, 0, 0]), e.get('to', [16, 16, 16])
+        xs += [f[0], t[0]]; ys += [f[1], t[1]]; zs += [f[2], t[2]]
+    if not xs:
+        return 16.0
+    return max(max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs))
 
 
 def load_model(path):
@@ -86,21 +99,28 @@ def detect_issues(model, path):
                 issues.append(('ERROR', 'COORD_OUT_OF_BOUNDS',
                     f'元素[{i}]({name}) 的 {v} 坐标 {frm[k]}~{to[k]} 超出 [{lo},{hi}]', None))
 
-        # 旋转角度
+        # 旋转角度 — 仅提示, 不修复: MC 26.1 CuboidRotation 支持任意角度 (EulerXYZ),
+        # snap 会破坏 30°/-17.5° 等真实摆放角度 (独轮推车 cargo 教训)。
         rot = e.get('rotation')
         if rot and isinstance(rot, dict):
             angle = float(rot.get('angle', 0))
             if abs(angle) > 0.01 and angle not in VALID_ROTATION_ANGLES:
                 issues.append(('WARN', 'INVALID_ROTATION_ANGLE',
                     f'元素[{i}]({name}) 旋转角 {angle}° 不是 22.5 的倍数'
-                    f'（MC element rotation 仅支持 -45/-22.5/0/22.5/45），'
-                    f'可能导致渲染异常。建议归整到 {round(angle/22.5)*22.5}',
-                    'snap_rotation'))
+                    f'（26.1 支持任意角, 仅供参考; 若为真实摆放角度请勿归整）',
+                    None))
 
         # UV 越界
         faces = e.get('faces', {})
         for side, face in faces.items():
             uv = face.get('uv')
+            # 26.1 CuboidFace.getTexture 是 GsonHelper.getAsString 必填 —
+            # face 缺 texture 字段会抛 "Missing texture, expected to find a string" → 紫黑/加载失败
+            if 'texture' not in face or not face['texture'] or face.get('texture') == '#missing':
+                issues.append(('ERROR', 'MISSING_FACE_TEXTURE',
+                    f'元素[{i}]({name}) {side} 面缺失/无效 texture 字段'
+                    f'（26.1 CuboidFace 要求每面必有有效 texture 字符串, #missing 或空壳应删除该 face）',
+                    'drop_null_texture_faces'))
             if not uv or len(uv) != 4:
                 continue
             u1, v1, u2, v2 = uv
@@ -154,6 +174,39 @@ def detect_issues(model, path):
                         f'模型跨格(尺寸 {span:.0f} 单位), 但 display.gui.scale={max_scale} 过大,'
                         f'物品栏图标会显示不全/过大。建议 scale ≤ {suggest}（参照水车 0.32）。',
                         'shrink_gui_scale'))
+
+        # 6. 方向性检测: 模型有"同一侧偏侧元素"时需 FACING 方向变体
+        #    (信箱旗杆偏左、木桩斧把偏上 — 放置朝向固定不符合直觉)
+        #    对称分布(桶四角各一个边框)不触发 — 非对称元素必须偏向同一象限才提示
+        off_center = []  # (cx-8, cz-8)
+        for e in model.get('elements', []):
+            f, t = e.get('from', [0, 0, 0]), e.get('to', [16, 16, 16])
+            cx = (f[0] + t[0]) / 2
+            cz = (f[2] + t[2]) / 2
+            w = abs(t[0] - f[0])
+            d = abs(t[2] - f[2])
+            if w > 1.0 or d > 1.0:  # 排除零宽装饰
+                if abs(cx - 8) > 2.0 or abs(cz - 8) > 2.0:
+                    off_center.append((cx - 8, cz - 8))
+        asym = False
+        if off_center:
+            # 多数偏侧(≥2/3 同侧)提示; 容忍少量反向装饰元素
+            from collections import Counter
+            cx_count = Counter(1 if dx > 0 else (-1 if dx < 0 else 0) for dx, dz in off_center)
+            cz_count = Counter(1 if dz > 0 else (-1 if dz < 0 else 0) for dx, dz in off_center)
+            cx_count.pop(0, None)
+            cz_count.pop(0, None)
+            total = len(off_center)
+            for cnt in (cx_count, cz_count):
+                if cnt and max(cnt.values()) >= max(2, total * 2 / 3):
+                    asym = True
+                    break
+        if asym:
+            issues.append(('WARN', 'NEEDS_FACING',
+                '模型有"同一侧偏侧"元素 — 放置时应朝向玩家视角,'
+                '需 extends HorizontalDirectionalBlock + blockstate facing 4方向 y 映射'
+                ' + 碰撞箱 rotationFor/Shapes.rotate (参照 spinning_wheel.json 标准)',
+                None))
 
     return issues
 
@@ -209,26 +262,37 @@ def apply_fixes(model, path, issues):
             model['parent'] = 'minecraft:block/block'
             fixes.append('已设 parent: minecraft:block/block')
         elif fix == 'scale_uv':
-            # 去掉 texture_size, 缩放 UV
+            # 去掉 texture_size。仅当 UV 看起来仍是 tex_size 网格 (max>16) 才缩放,
+            # BB java_block 导出已把 128/64 网格 UV 除到 16 网格, 再缩会破坏模型。
             if 'texture_size' in model:
                 del model['texture_size']
-            scale = 16.0 / tw if tw != 16 else 1.0
-            if scale != 1.0:
+            uv_max = 0.0
+            for e in model.get('elements', []):
+                for face in e.get('faces', {}).values():
+                    for v in face.get('uv') or []:
+                        uv_max = max(uv_max, abs(v))
+            if uv_max > 16.01 and tw and tw != 16:
+                scale = 16.0 / tw
                 for e in model.get('elements', []):
                     for face in e.get('faces', {}).values():
                         if 'uv' in face:
                             face['uv'] = [v * scale for v in face['uv']]
-            fixes.append(f'已去掉 texture_size, UV 从 {tw} 坐标缩放到 16（×{scale}）')
+                fixes.append(f'已去掉 texture_size, UV 从 {tw} 坐标缩放到 16（×{scale}）')
+            else:
+                fixes.append(f'已去掉 texture_size (UV 已是 16 网格, max={uv_max:.2f}, 未再缩放)')
         elif fix == 'fix_particle':
             # 启发式: 木制模型用 oak_planks
             model.setdefault('textures', {})['particle'] = 'minecraft:block/oak_planks'
             fixes.append('已将 particle 改为 minecraft:block/oak_planks')
         elif fix == 'add_gui_display':
+            # 智能 scale: span≤16(满格) 用原版标准 0.625; span>16(跨格) 用 10/span 缩进格内
+            span = _model_max_span(model)
+            scale = round(10.0 / span, 3) if span > 16 else 0.625
             model.setdefault('display', {})['gui'] = {
                 'rotation': [30, 225, 0],
-                'scale': [0.6, 0.6, 0.6]
+                'scale': [scale, scale, scale]
             }
-            fixes.append('已添加 display.gui 等轴测视角')
+            fixes.append(f'已添加 display.gui 等轴测视角 (scale={scale}, max_span={span}, {"跨格公式" if span > 16 else "满格标准0.625"})')
         elif fix == 'snap_rotation':
             for e in model.get('elements', []):
                 rot = e.get('rotation')
@@ -237,14 +301,30 @@ def apply_fixes(model, path, issues):
                     if abs(angle) > 0.01 and angle not in VALID_ROTATION_ANGLES:
                         rot['angle'] = round(angle / 22.5) * 22.5
             fixes.append('已将非法旋转角归整到最近的 22.5 倍数')
+        elif fix == 'drop_null_texture_faces':
+            # 删除 texture 为 null/缺失的 face (26.1 必填 texture, 不可见面应删除而非留空壳)
+            dropped = 0
+            for e in model.get('elements', []):
+                for side in list(e.get('faces', {}).keys()):
+                    f = e['faces'][side]
+                    if not f.get('texture') or f.get('texture') == '#missing':
+                        del e['faces'][side]
+                        dropped += 1
+                # 全部面被删 → 该元素无处渲染, 删除元素
+            model['elements'] = [e for e in model['elements'] if e.get('faces')]
+            fixes.append(f'已删除 {dropped} 个无纹理 face (+对应空元素)')
         elif fix == 'shrink_gui_scale':
-            # 跨格模型图标缩小到 0.32 (参照水车)
-            model.setdefault('display', {})['gui'] = {
-                'rotation': [30, 225, 0],
-                'translation': [0, -2, 0],
-                'scale': [0.32, 0.32, 0.32]
-            }
-            fixes.append('已将跨格模型图标 scale 缩小到 0.32')
+            # 跨格模型: 智能 scale = 10/max_span + 居中平移 (参照满格 0.625 公式)
+            span = _model_max_span(model)
+            if span > 16:
+                scale = round(10.0 / span, 3)
+                model.setdefault('display', {})['gui'] = {
+                    'rotation': [30, 225, 0],
+                    'scale': [scale, scale, scale]
+                }
+                fixes.append(f'已将跨格模型图标 scale 自动适配为 {scale} (max_span={span})')
+            else:
+                fixes.append('模型未超格, 无需缩放')
 
     return fixes
 
