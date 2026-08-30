@@ -14,7 +14,7 @@
 import argparse
 import sys
 import os
-from parse_model import load_cubes, merge_overlapping_hollow_cubes, all_bounds, cube_aabb
+from parse_model import load_cubes, merge_overlapping_hollow_cubes, all_bounds
 from generate import VoxelGrid, compress_voxels, compress_adaptive
 
 
