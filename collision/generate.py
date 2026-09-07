@@ -415,6 +415,69 @@ def dedupe_boxes(boxes, res=16):
     return out
 
 
+def planar_merge(boxes, tol=0.02):
+    """【去重·消除黑线】删被包含 box + 合并同向相邻 box。
+
+    映射/薄壳分段会产生: ①被其他 box 完全包含的多余 box; ②同一薄片面被切成
+    多个边界错位的 box。两者都是 MC 画出多余黑线轮廓的来源。
+
+    规则:
+    1. 删"被另一个 box 完全包含"的 box (维度被动被内层盖住, 多余)。
+    2. 合并两个 box: 共享一个厚度方向(一个维度区间相同/近同), 且在其余两个轴
+       上相邻(一个的 hi ≈ 另一个的 lo, 容差 tol) → 并成一个更大 box。
+    """
+    # 1. 删被包含
+    def contains(outer, inner):
+        return (outer[0] <= inner[0] + tol and outer[1] <= inner[1] + tol and outer[2] <= inner[2] + tol
+                and outer[3] >= inner[3] - tol and outer[4] >= inner[4] - tol and outer[5] >= inner[5] - tol)
+    kept = []
+    for i, b in enumerate(boxes):
+        if any(i != j and contains(boxes[j], b) for j in range(len(boxes))):
+            continue
+        kept.append(b)
+    # 2. 合并同向相邻 (沿 x/y/z 任一轴厚度相同, 另两轴相邻)
+    changed = True
+    while changed:
+        changed = False
+        out = []
+        used = [False] * len(kept)
+        for i in range(len(kept)):
+            if used[i]:
+                continue
+            a = kept[i]
+            merged = False
+            for j in range(i + 1, len(kept)):
+                if used[j]:
+                    continue
+                b = kept[j]
+                # 判定: 某个轴方向上, a 与 b 的一个轴区间"重合"(同厚), 且另两轴相接
+                for axis in range(3):
+                    o1 = (axis + 1) % 3; o2 = (axis + 2) % 3
+                    # axis=厚度主方向: a,b 在该轴区间近似重合
+                    if not (abs(a[axis] - b[axis]) < tol and abs(a[axis + 3] - b[axis + 3]) < tol):
+                        continue
+                    # 其余两轴区间近似重合
+                    ok = all(abs(a[o1] - b[o1]) < tol and abs(a[o1 + 3] - b[o1 + 3]) < tol
+                             and abs(a[o2] - b[o2]) < tol and abs(a[o2 + 3] - b[o2 + 3]) < tol
+                             for o in [o1, o2])
+                    if not ok:
+                        continue
+                    # 余下需在"厚度轴"上相邻(一个hi≈另一个lo)才合并; 同面不同段(z向错位)不相邻不合并
+                    if abs(a[axis + 3] - b[axis]) < tol or abs(b[axis + 3] - a[axis]) < tol:
+                        lo = min(a[axis], b[axis]); hi = max(a[axis + 3], b[axis + 3])
+                        nb = list(a); nb[axis] = lo; nb[axis + 3] = hi
+                        used[j] = True; merged = True
+                        break
+            if merged:
+                changed = True
+                # 用合并后的 box 继续比较 (简单: 重新开始一轮)
+            else:
+                out.append(a)
+            used[i] = True
+        kept = out
+    return kept
+
+
 def compress_adaptive(cubes, res=16, seg_count=3, skip_rotated_decor=True, tex_img=None, tex_size=(0, 0), tex_uv=(16, 16)):
     """自适应合并: 非旋转 cube 纹理覆盖体素化; 旋转 cube 处理。
 

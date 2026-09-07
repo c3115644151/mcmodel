@@ -91,10 +91,19 @@ def deploy_collision(model_path, res=16, seg_count=6, allow_exposure=True, exclu
         model_min = {'x': bx[0], 'y': bx[1], 'z': bx[2]}
         origins = compute_cell_origins(grid, model_min, {'x': bx[3], 'y': bx[4], 'z': bx[5]})
         cells = split_all_boxes(boxes, grid)
-        result['cells'] = {k: [to_local(b, origins, grid) for b in cb] for k, cb in cells.items()}
-        result['meshes_java'] = {str(k): to_java(v) for k, v in cells.items()}
+        from generate import planar_merge
+        result['cells'] = {}
+        for k, cb in cells.items():
+            local = [to_local(b, origins, grid) for b in cb]
+            merged = planar_merge(local)
+            result['cells'][k] = merged
+            result['meshes_java'][str(k)] = to_java(merged)
     else:
+        from generate import planar_merge
+        boxes = planar_merge(boxes)
+        result['boxes'] = boxes
         result['java'] = to_java(boxes)
+    result['box_count'] = len(result['boxes'])
 
     return result
 
