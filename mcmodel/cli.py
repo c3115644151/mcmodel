@@ -75,7 +75,7 @@ def describe() -> None:
                 marks.append("gate")
             if command.needs_game:
                 marks.append("needs game")
-            if not command.batch:
+            if not command.batch and command.args:
                 marks.append("needs args")
             suffix = f"  [{', '.join(marks)}]" if marks else ""
             print(f"  {command.name:22} {command.summary}{suffix}")
