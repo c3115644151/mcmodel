@@ -21,8 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import model_uv_audit
 
-ROOT = Path(__file__).resolve().parents[2]
-SOURCES = ROOT / "tools/deploy/model_sources"
+# Relative to this file, so the audit works both inside a mod checkout (<mod>/tools/deploy/)
+# and in the standalone tool repository (<repo>/deploy/).
+SOURCES = Path(__file__).resolve().parent / "model_sources"
 
 
 def main() -> int:

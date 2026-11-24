@@ -17,6 +17,46 @@ python -m mcmodel run <name> -- <args>   # 跑单个命令
 
 **59 条命令**：source 5 / build 25 / gate 22 / observe 7。`list` 里的表是权威，本文只解释为什么这样分层。
 
+## 安装
+
+mcmodel 不是一个能独立运行的 CLI。生成器要往 `src/main/resources/assets/<mod_id>/` 写资源，
+门要读同一棵树，`jar` 与 `processResources` 跑的是 mod 工程的 Gradle 任务 —— 所以它**与一个
+Minecraft mod 工程同仓**，标准接法是 submodule：
+
+```bash
+git clone --recursive https://github.com/c3115644151/pastoral-home.git
+cd pastoral-home/tools
+python -m mcmodel doctor
+```
+
+依赖三项，缺哪项 `doctor` 会直接报出来，不用猜：
+
+| 依赖 | 用在哪 | 缺了会怎样 |
+|---|---|---|
+| Python 3.10+ 与 Pillow | 全部生成器与门 | 什么都跑不了 |
+| JDK 25 + 工程里的 Gradle wrapper | `gradle:` 开头的命令（`jar`、`process-resources`） | 只有这类命令失败 |
+| Node 22+ | 仅 observe 阶段（`mcpfabric/`） | 只能做静态侧，不能进游戏看 |
+
+已存在的工程换成：
+
+```bash
+git submodule add https://github.com/c3115644151/mcmodel.git tools
+git submodule update --init --recursive
+```
+
+## 六十秒上手
+
+```bash
+python -m mcmodel list                      # 59 条命令，四个阶段
+python -m mcmodel gate --no-build           # 22 个门全跑，不重跑生成器
+python -m mcmodel gate --no-build gate-particle   # 单跑一条门，秒级
+python -m mcmodel build prepare-piano       # 只重生成一个模型的资源
+python -m mcmodel shot --out build/x.png --scene scene.js --reload
+```
+
+`gate` 不带 `--no-build` 时会先重跑 19 条批处理生成器，再跑需要的门。这不是顺手做的：
+"门读到了上一轮的旧产物，于是报出了一个已经修好的错"是本工具最常见的假阳性来源。
+
 ## 为什么要这个工具
 
 Blockbench 的视口与 Minecraft 的方块渲染管线**不等价**，而且差异是静默的：
@@ -107,9 +147,8 @@ tools/
   deploy/             ← 具体实现脚本（97 个 .py + 3 个 .ps1），其中 59 个入口登记在命令表里
     model_sources/    美术源 .bbmodel
     IMPLEMENTATION_CONTRACT.md   实装契约：一个模型完成前必须逐条判定的跨学科决策
-  common/config.py    ← 项目参数自动侦测（mod_id / package / 资源路径）
-  collision/          ← 碰撞箱几何：从模型推导，独立于实装
   mcpfabric/          ← 与运行中的客户端通信（截图、方块、脚本）
+  mcpmod/             ← 备用桥：只在需要 UI 输入（JEI overlay、自绘界面）时才用
 ```
 
 脚本不按阶段搬目录：它们被 `build.gradle` 的 50 处直接引用、被文档与彼此 import，改名即断链而收益为零。
@@ -152,4 +191,10 @@ tools/
 早期路线是"一键实装"（`deploy/cli.py` + `analyzer.py` + `codegen.py`：分析模型 → 生成 Block/Entity 骨架 → 输出清单）。
 它正确识别了"模型实装包含哪些学科"，但把产出定位成**代码**而不是**证据**，与现在的生成器+门路线冲突，已删除；
 需要时从 git 历史取回。它留下的最有价值的产物是 `IMPLEMENTATION_CONTRACT.md`，现在是实装前的必读清单。
-同目录的 `collision/LESSONS.md` 里，碰撞箱与校验那部分仍在 `gate-collision` 链上使用，提到 `cli.py` 的条目已标注作废。
+旧一代的 JS 工具与 `collision/`、`common/` 模块也随之一并移除，依据是当前 97 个脚本里没有任何一行
+import 它们。碰撞箱能力没有丢：它在 `deploy/piano_shapes.py` 这类"生成器 + `gate-collision`"的形式里
+继续工作。旧实现留在仓库的 `legacy` 分支。
+
+## 许可
+
+MIT，见 [LICENSE](LICENSE)。
