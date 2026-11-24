@@ -15,7 +15,7 @@ python -m mcmodel run <name> -- <args>   # 跑单个命令
 
 在 `tools/` 目录下运行，或用项目 venv 的解释器（门需要 Pillow）。
 
-**64 条命令**：source 5 / build 31 / gate 21 / observe 7。`list` 里的表是权威，本文只解释为什么这样分层。
+**59 条命令**：source 5 / build 25 / gate 22 / observe 7。`list` 里的表是权威，本文只解释为什么这样分层。
 
 ## 为什么要这个工具
 
@@ -60,7 +60,7 @@ python -m mcmodel gen-icons <model.json>
 | `gate-collision` | 碰撞表与模型脱钩（改了模型忘记重算 Shapes） |
 
 ```
-python -m mcmodel gate                 # 全部：先跑 19 条批处理 build 命令，再跑 21 个门
+python -m mcmodel gate                 # 全部：先跑 19 条批处理 build 命令，再跑 22 个门
 python -m mcmodel gate gate-lang       # 单个：只跑它声明的 requires，不重建整个项目
 python -m mcmodel gate --no-build      # 全部门，跳过重建
 ```
@@ -104,7 +104,7 @@ tools/
   mcmodel/            ← 本工具：命令表 + 分发器（不重复实现逻辑）
     registry.py       命令表，一个命令一行，说明它属于哪一阶段
     cli.py            python -m mcmodel
-  deploy/             ← 具体实现脚本（98 个 .py + 3 个 .ps1），其中 64 个入口登记在命令表里
+  deploy/             ← 具体实现脚本（97 个 .py + 3 个 .ps1），其中 59 个入口登记在命令表里
     model_sources/    美术源 .bbmodel
     IMPLEMENTATION_CONTRACT.md   实装契约：一个模型完成前必须逐条判定的跨学科决策
   common/config.py    ← 项目参数自动侦测（mod_id / package / 资源路径）

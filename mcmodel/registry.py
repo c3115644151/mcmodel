@@ -111,53 +111,60 @@ COMMANDS: tuple[Command, ...] = (
                           "--output", "build/glow_berry_basket_models/item_icon_preview.png",
                           "--report", "build/glow_berry_basket_models/item_icon_preview.json")),
 
-    # One-shot converters: every one needs a path or an id, so they run on demand and a batch build
-    # skips them. They stay listed because "which converter turns which format" is the question
-    # this table exists to answer.
-    # The packaging step: the one command here that runs Gradle instead of a script, because the
-    # artefact under test is the jar itself. Not part of a batch build (it compiles Java), but
-    # gate-jar names it so the gate never reads a stale jar left over from an earlier run.
+    # One-shot tools: each needs a path or an id, so they run on demand and a batch build skips
+    # them. They stay listed because "which tool turns which format" is the question this table
+    # exists to answer.
+    #
+    # Only real entry points are listed. split_model_cells.py, block_item_model.py,
+    # item_icon_preview.py and item_icon_proxy.py are modules the generators and the gates import;
+    # they have no main(), so listing them as commands sent people to run a file that does nothing
+    # on its own. export_free_obj.py has a main() but it hard-codes the record player source, which
+    # is why prepare-instruments owns it instead.
+    # The packaging step is the one command here that runs Gradle rather than a script, because the
+    # artefact under test is the jar itself.
     Command("jar", "build", "gradle:jar",
-            "Compile the mod jar so a gate can inspect what actually ships.", batch=False),
+            "Compile the mod jar so a gate can inspect what actually ships.", batch=False,
+            notes="No arguments: it packages whatever src/ currently holds."),
     Command("import-bbmodel", "build", "import_java_block_bbmodel.py",
-            "Convert a java_block .bbmodel into a block model on the 0..16 uv grid.", batch=False),
+            "Convert a java_block .bbmodel into a block model on the 0..16 uv grid.", batch=False,
+            args=("<source.bbmodel> --block-id <id> --model-out <json>",)),
     Command("import-cube", "build", "import_simple_cube_block.py",
-            "Convert a single full-cube .bbmodel into plain block + item assets.", batch=False),
-    Command("export-free-obj", "build", "export_free_obj.py",
-            "Export a Blockbench free-format model as an OBJ plus its textures.", batch=False),
-    Command("split-cells", "build", "split_model_cells.py",
-            "Cut one model into per-cell models for a multiblock, culling faces on the seams.", batch=False),
+            "Convert a single full-cube .bbmodel into plain block + item assets.", batch=False,
+            args=("<source.bbmodel> <block_id>",)),
     Command("split-parts", "build", "split_model_parts.py",
-            "Split a model into parts a multipart blockstate can show or hide.", batch=False),
+            "Split a model into parts a multipart blockstate can show or hide.", batch=False,
+            args=("<model.json> --part <name>=<indices> [--translate <name>=<x,y,z>]",)),
     Command("seated", "build", "create_seated_model.py",
-            "Produce a seated variant (flower pot on a stand) from a base model.", batch=False),
+            "Produce a seated variant (flower pot on a stand) from a base model.", batch=False,
+            args=("<source.json> <output.json> [--shift <model-px>] [--verify]",)),
     Command("bake-rotation", "build", "bake_rotated_cubes.py",
-            "Bake element rotations into explicit geometry where the loader cannot honour them.", batch=False),
-    Command("bake-liquid", "build", "bake_liquid_flow.py",
-            "Bake animated liquid surfaces into frame textures.", batch=False),
-    Command("block-model", "build", "block_item_model.py",
-            "Derive the item model for a block from its block model.", batch=False),
-    Command("gen-icons", "build", "item_icon_preview.py",
-            "Project block models into GUI item icons and report their silhouettes.", batch=False),
-    Command("gen-icon-proxy", "build", "item_icon_proxy.py",
-            "Build the GUI proxy models used when a flat icon cannot carry the shape.", batch=False),
+            "Bake element rotations into explicit geometry where the loader cannot honour them.",
+            batch=False, args=("<source.json> --out <json> [--step <degrees>]",)),
 
     # ------------------------------------------------------------------ gate
+    Command("gate-registry", "gate", "test_command_registry.py",
+            "The command table still matches the disk, and every gate declares what it needs.",
+            ci=True, notes="Reads registry.py and the deploy directory; needs no generated file."),
     Command("gate-assets", "gate", "test_requested_model_assets.py",
             "Requested models have blockstates, item models, loot, tags and lang.", ci=True,
             requires=("norm-icons",)),
     Command("gate-bounds", "gate", "test_model_bounds.py",
-            "Element bounds stay inside the range the block model format accepts.", ci=True),
+            "Element bounds stay inside the range the block model format accepts.", ci=True,
+            notes="Reads every model in src/, so it is only meaningful after the batch build."),
     Command("gate-slices", "gate", "test_sliced_render_shapes.py",
-            "Every sliced blockstate owner renders its model instead of an empty shape.", ci=True),
+            "Every sliced blockstate owner renders its model instead of an empty shape.", ci=True,
+            notes="Reads every blockstate and its owner class in src/, so it follows the batch build."),
     Command("gate-render-semantics", "gate", "test_render_semantics_gate.py",
-            "Opaque shells, draw order and render_type: the three traps that hide a core.", ci=True),
+            "Opaque shells, draw order and render_type: the three traps that hide a core.", ci=True,
+            notes="Reads every model in src/, so it is only meaningful after the batch build."),
     Command("gate-light", "gate", "test_block_model_lighting.py",
-            "Ambient occlusion overrides are intentional and local.", ci=True),
+            "Ambient occlusion overrides are intentional and local.", ci=True,
+            notes="Reads every model in src/, so it is only meaningful after the batch build."),
     Command("gate-particles", "gate", "test_block_model_particles.py",
             "Particle textures resolve.", ci=True, requires=("norm-particles",)),
     Command("gate-lang", "gate", "test_localization_catalog.py",
-            "Every registered content name has en_us and zh_cn entries.", ci=True),
+            "Every registered content name has en_us and zh_cn entries.", ci=True,
+            notes="Reads the datagen output in src/generated; rerun gradlew runClientData after adding a name."),
     Command("gate-tab", "gate", "test_creative_tab_coverage.py",
             "Every item lands in a creative tab.", ci=True, requires=("prepare-currency",)),
     Command("gate-party-lights", "gate", "party_lights_report.py",
@@ -194,9 +201,11 @@ COMMANDS: tuple[Command, ...] = (
             "Every GUI icon proxy resolves to the model its item definition names.", ci=True,
             requires=("norm-icons",)),
     Command("gate-collision", "gate", "audit_recent_outdoor_collisions.py",
-            "Declared collision shapes still cover the models they belong to.", ci=True),
+            "Declared collision shapes still cover the models they belong to.", ci=True,
+            notes="Reads every model in src/, so it is only meaningful after the batch build."),
     Command("gate-import", "gate", "test_import_java_block_bbmodel.py",
-            "The importer's uv scaling and cell slicing stay correct.", ci=True),
+            "The importer's uv scaling and cell slicing stay correct.", ci=True,
+            notes="Unit test of the importer: writes to a temporary directory and needs no generated file."),
 
     # --------------------------------------------------------------- observe
     Command("shot", "observe", "live_capture.py",
