@@ -1,6 +1,6 @@
-# mcmodel — Minecraft 模型实装的证据链
+# mcmodel — Minecraft 模型实装工具
 
-把 Blockbench 工程翻译成方块资源，**并证明译文忠实**。
+把 Blockbench 工程翻译成方块资源。
 
 工具不生产"看起来差不多"的模型。它生产两样东西：可被构建失败拦住的**不变量**，和可被人复核的**证据**。
 产物（blockstates / models / textures / icons / loot / lang）只是这两者的副产品。
