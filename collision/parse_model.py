@@ -89,6 +89,56 @@ def cube_corners(cube):
     return corners
 
 
+def _element_groups(data, element_count):
+    """Map element indices to their nearest Blockbench group, when present."""
+    mapping = {}
+
+    def visit_export_node(node, group_id):
+        if isinstance(node, int) and not isinstance(node, bool):
+            if 0 <= node < element_count:
+                mapping[node] = group_id
+        elif isinstance(node, dict):
+            children = node.get('children', [])
+            current = f"{group_id}/{node.get('name', 'group')}:{len(mapping)}"
+            for child in children if isinstance(children, list) else []:
+                visit_export_node(child, current)
+        elif isinstance(node, list):
+            for child in node:
+                visit_export_node(child, group_id)
+
+    groups = data.get('groups')
+    if isinstance(groups, list):
+        for i, group in enumerate(groups):
+            if isinstance(group, dict):
+                visit_export_node(group, f"group:{i}")
+        if mapping:
+            return mapping
+
+    # Native .bbmodel outliners contain UUID references rather than element indices.
+    elements = data.get('elements', [])
+    uuids = {e.get('uuid'): i for i, e in enumerate(elements) if e.get('uuid') is not None}
+
+    def visit_outliner(node, group_id=None):
+        if isinstance(node, str):
+            if group_id is not None and node in uuids:
+                mapping[uuids[node]] = group_id
+        elif isinstance(node, dict):
+            children = node.get('children')
+            if not isinstance(children, list):
+                if group_id is not None and node.get('uuid') in uuids:
+                    mapping[uuids[node['uuid']]] = group_id
+                return
+            current = f"outliner:{node.get('uuid', node.get('name', 'group'))}"
+            for child in children:
+                visit_outliner(child, current)
+        elif isinstance(node, list):
+            for child in node:
+                visit_outliner(child, group_id)
+
+    visit_outliner(data.get('outliner', []))
+    return mapping
+
+
 def load_cubes(source: str):
     """
     从 bbmodel 或 model JSON 加载 cube 列表。
@@ -104,6 +154,7 @@ def load_cubes(source: str):
         raise ValueError(f"不是有效的模型文件(缺 elements): {source}")
 
     cubes = []
+    group_map = _element_groups(data, len(data['elements']))
     for i, e in enumerate(data['elements']):
         frm = e.get('from', [0, 0, 0])
         to = e.get('to', [16, 16, 16])
@@ -118,6 +169,7 @@ def load_cubes(source: str):
             'from': [float(frm[0]), float(frm[1]), float(frm[2])],
             'to': [float(to[0]), float(to[1]), float(to[2])],
             'rotation': rotation,
+            'group': group_map.get(i),
             'faces': e.get('faces', {}),  # 面纹理信息(供面壳识别)
         }
         cube['corners'] = cube_corners(cube)
@@ -152,13 +204,71 @@ def textured_faces(cube):
 
 
 def is_hollow_cube(cube):
-    """判断 cube 是否为面壳(至少 2 面无纹理 = 镂空成壳)。
-    面壳(如毛毯 3面有纹理)应只建有纹理方向的薄壳碰撞。
-    只有 1 面无纹理的 cube(如桶盖 5面有纹理)是实心, 碰撞保持完整。"""
+    """Detect a source element whose face set looks like an open shell.
+
+    This is diagnostic metadata only. Collision generation deliberately uses
+    that element's full geometric AABB unless it is a zero-volume plane.
+    """
     # 内外壁配对被 merge 后显式标记为薄壳容器
     if cube.get('__hollow'):
         return True
     return len(textured_faces(cube)) <= 4
+
+
+def collision_exclusion_reasons(cube, min_thickness=1.0):
+    """Describe thin, shell-like, and rotated source geometry for diagnostics."""
+    reasons = []
+    extents = [abs(float(cube['to'][axis]) - float(cube['from'][axis])) for axis in range(3)]
+    if any(extent <= 1e-9 for extent in extents):
+        reasons.append('zero-thickness plane')
+    elif min(extents) < min_thickness:
+        reasons.append(f'thin element (<{min_thickness:g} model units)')
+
+    rotation = cube.get('rotation')
+    if rotation:
+        angles = rotation.get('angles', [0, 0, 0])
+        if any(abs(angle / 90.0 - round(angle / 90.0)) > 1e-6 for angle in angles):
+            reasons.append('oblique rotation')
+
+    if is_hollow_cube(cube):
+        reasons.append('open/thin shell')
+    return reasons
+
+
+def filter_collision_cubes(cubes, min_thickness=1.0, include_thin=False,
+                           include_shells=True, include_rotated=True):
+    """Filter elements with no volume and return (kept, skipped-with-reasons).
+
+    Positive-volume shells and rotated elements stay in the collision input:
+    downstream generation wraps each in its full (rotated, when applicable)
+    AABB. This avoids both a missing wall collider and a false hollow shell.
+    Only zero-volume planes are visual-only by default; ``include_thin`` is an
+    explicit opt-in that gives those planes a minimal collision thickness.
+    """
+    group_has_volume = set()
+    for cube in cubes:
+        group = cube.get('group')
+        extents = [abs(cube['to'][axis] - cube['from'][axis]) for axis in range(3)]
+        if group is not None and all(extent > 1e-9 for extent in extents):
+            group_has_volume.add(group)
+
+    kept, skipped = [], []
+    for cube in cubes:
+        reasons = collision_exclusion_reasons(cube, min_thickness)
+        blocked_reasons = []
+        for reason in reasons:
+            if (reason == 'zero-thickness plane' and not include_thin
+                    and cube.get('group') not in group_has_volume):
+                blocked_reasons.append(reason)
+            elif reason == 'open/thin shell' and not include_shells:
+                blocked_reasons.append(reason)
+            elif reason == 'oblique rotation' and not include_rotated:
+                blocked_reasons.append(reason)
+        if blocked_reasons:
+            skipped.append((cube, blocked_reasons))
+        else:
+            kept.append(cube)
+    return kept, skipped
 
 
 def merge_overlapping_hollow_cubes(cubes):

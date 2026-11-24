@@ -120,7 +120,7 @@ def measure(model, scale=1.0, ty=0.0):
     pts = [project_iso(p) for p in corners(model)]
     # 应用 scale/translation
     xs = [p[0] * scale for p in pts]
-    ys = [p[1] * scale + ty for p in pts]
+    ys = [p[1] * scale - ty for p in pts]
     x0, x1 = min(xs), max(xs)
     y0, y1 = min(ys), max(ys)
     w = x1 - x0
@@ -135,11 +135,11 @@ def measure(model, scale=1.0, ty=0.0):
         'optimal_scale': round(14.1 / max(w, h), 4) if max(w, h) > 0 else 1.0,
         # 【实测校准】scale ×1.022 补偿 (from 纺车实测 0.5807→0.5938)
         'recommended_scale': round(14.1 / max(w, h) * 1.022, 4) if max(w, h) > 0 else 0.625,
-        # ty: 方向已校准 (cy-8); 绝对值仅供起点 (视觉居中≠包围盒居中, 建议微调 ±3px)
-        # ty: MC GUI translation 正=上移。⚠️ 包围盒居中公式仅作参考 —
+        # ty is positive-up while projected screen Y is positive-down; use the
+        # visible-alpha centering pipeline for final placement, not box bounds.
         # 实测基准: 同类扁平模型 (wooden_stool=+0.3, firewood_bundle=+0.6) 均远小于居中值,
         # 视觉对齐以同类模型实测点为准, 勿直接套用居中公式。
-        'recommended_ty': round(8 - cy, 3),  # 仅供参考, 不直接套用
+        'recommended_ty': round(cy - 8, 3),  # center projected box on the GUI cell's y=8 line
     }
 
 

@@ -1,0 +1,114 @@
+{
+  "resolution": 8,
+  "profiles": [
+    {
+      "id": "greenery_2",
+      "models": ["greenery_2.json"],
+      "java": "src/main/java/com/pastoralhome/block/GreeneryPotBlock.java",
+      "shape": "POT",
+      "mode": "manual_probes",
+      "probes": [
+        {"point": [8, 3, 8], "collides": true, "label": "planter floor"},
+        {"point": [8, 9, 3.5], "collides": true, "label": "front wall"},
+        {"point": [8, 9, 8], "collides": false, "label": "open foliage cavity"},
+        {"point": [8, 13, 8], "collides": false, "label": "foliage above planter walls"}
+      ],
+      "max_shape_boxes": 5,
+      "air_rationale": "The pot is modeled as a floor plus perimeter walls; volume metrics on the source cubes would incorrectly count the intentional hollow cavity as missed collision."
+    },
+    {
+      "id": "sunflower_planter",
+      "models": ["sunflower_planter.json"],
+      "java": "src/main/java/com/pastoralhome/block/SunflowerPlanterBlock.java",
+      "shape": "POT",
+      "include_indices": [1, 2],
+      "mode": "single_block",
+      "max_air_percent": 1.0,
+      "max_miss_percent": 0.1,
+      "max_shape_boxes": 2
+    },
+    {
+      "id": "floor_lamp",
+      "models": ["floor_lamp.json", "floor_lamp_on.json"],
+      "java": "src/main/java/com/pastoralhome/block/FloorLampBlock.java",
+      "mode": "layers",
+      "layers": [
+        {"shape": "LOWER_SHAPE", "cell_y": 0.0, "model_y": [0.0, 16.0], "offset_y": 0.0,
+         "collision_groups": [[4], [5], [6]]},
+        {"shape": "UPPER_SHAPE", "cell_y": 1.0, "model_y": [16.0, 32.0], "offset_y": 16.0,
+         "collision_groups": [[4], [0, 3], [1, 2]]}
+      ],
+      "selection_layers": [
+        {"shape": "LOWER_SHAPE", "offset_y": 0.0},
+        {"shape": "UPPER_SHAPE", "offset_y": 16.0}
+      ],
+      "max_air_percent": 2.0,
+      "max_miss_percent": 0.1,
+      "max_shape_boxes": {"LOWER_SHAPE": 3, "UPPER_SHAPE": 3},
+      "air_rationale": "Lamp collision is split by the y=16 block boundary; the shade has separate lower and upper boxes to follow its tapered silhouette."
+    },
+    {
+      "id": "globe",
+      "models": ["globe.json"],
+      "java": "src/main/java/com/pastoralhome/block/GlobeBlock.java",
+      "shape": "COLLISION_SHAPE",
+      "mode": "single_block",
+      "include_indices": [0],
+      "max_air_percent": 83.0,
+      "max_miss_percent": 0.1,
+      "max_shape_boxes": 1,
+      "air_rationale": "The globe sphere alone collides; decorative axis, stand, and base remain pass-through."
+    },
+    {
+      "id": "telescope",
+      "models": ["telescope.json"],
+      "java": "src/main/java/com/pastoralhome/block/TelescopeBlock.java",
+      "mode": "layers",
+      "layers": [
+        {"shape": "LOWER_SHAPE", "cell_y": 0.0, "model_y": [0.0, 16.0], "offset_y": 0.0,
+         "collision_groups": [[8, 13, 14, 15, 16, 17, 18, 19]]},
+        {"shape": "UPPER_SHAPE", "cell_y": 1.0, "model_y": [16.0, 32.0], "offset_y": 16.0,
+         "collision_groups": [[1, 2, 3, 6, 7, 10, 12], [0, 4, 5, 9, 11],
+                              [8, 13, 14, 15, 16, 17, 18, 19]]}
+      ],
+      "selection_layers": [
+        {"shape": "LOWER_SHAPE", "offset_y": 0.0},
+        {"shape": "UPPER_SHAPE", "offset_y": 16.0}
+      ],
+      "max_air_percent": 600.0,
+      "max_miss_percent": 0.1,
+      "max_shape_boxes": {"LOWER_SHAPE": 1, "UPPER_SHAPE": 4},
+      "air_rationale": "Lower tripod feet use one envelope; the upper cell splits tube, mount, and side-rail overhangs so the small crossing at y=16 is not one full-width box."
+    },
+    {
+      "id": "one_cell_canopy",
+      "models": ["one_cell_canopy.json"],
+      "java": "src/main/java/com/pastoralhome/block/OneCellCanopyBlock.java",
+      "shape": "SELECT_SHAPE",
+      "mode": "manual_probes",
+      "probes": [
+        {"point": [8, 10, 8], "collides": true, "label": "canopy fabric body"},
+        {"point": [8, 10, 3], "collides": true, "label": "front valance"},
+        {"point": [8, 15.5, 8], "collides": true, "label": "fabric up against the cell ceiling"},
+        {"point": [8, 3, 8], "collides": false, "label": "open air under the fabric"},
+        {"point": [1, 3.5, 1], "collides": false, "label": "open air at the corner below the valance"}
+      ],
+      "max_shape_boxes": 1,
+      "air_rationale": "The awning declares one solid fabric envelope (box(0,4,1,16,16,18.1)), so probing that envelope is meaningful while voxel volume metrics against a thin sloped sheet only report a meaningless air surplus: the same reason the hollow planter uses probes."
+    },
+    {
+      "id": "a_frame_ladder",
+      "models": ["a_frame_ladder.json"],
+      "java": "src/main/java/com/pastoralhome/block/AFrameLadderBlock.java",
+      "mode": "layers",
+      "clip_bounds": {"y": [0.0, 32.0]},
+      "layers": [
+        {"shape": "LOWER_SHAPE", "cell_y": 0.0, "model_y": [0.0, 16.0], "offset_y": 0.0},
+        {"shape": "UPPER_SHAPE", "cell_y": 1.0, "model_y": [16.0, 32.0], "offset_y": 16.0}
+      ],
+      "max_air_percent": 1.6,
+      "max_miss_percent": 0.1,
+      "max_shape_boxes": {"LOWER_SHAPE": 6, "UPPER_SHAPE": 7}
+    }
+  ]
+}

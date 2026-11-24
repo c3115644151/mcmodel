@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """
-碰撞箱生成器 - 从 BlockBench 模型生成 Java VoxelShape 代码。
+Collision helper routines for exported BlockBench geometry.
 
-算法:
-1. 体素化: 把每个 cube 占据的体素标记进三维数组
-2. 合并: 贪心合并相邻体素成 axis-aligned box
-3. 输出: Shapes.or(box(x1,y1,z1,x2,y2,z2), ...) 的 Java 代码
-
-纯几何路径: 碰撞箱 = 模型 cube 几何的体素化 + 合并。
-不处理纹理镂空 (视觉缺口由美术在 BlockBench 里拆几何表达)。
+The standard deployment path uses one full AABB per positive-volume element,
+including rotated and partial-face shell elements. The VoxelGrid routines below
+remain available for rendering/occupancy diagnostics, but are not the default
+collision policy because a missing face/UV must not create a hollow collider.
 
 用法:
     python generate.py <模型文件> [--resolution 16] [--exclude 名称1,名称2] [--prefix 前缀]
@@ -38,46 +35,50 @@ class VoxelGrid:
         from parse_model import has_face_texture
         return 1.0 if has_face_texture(cube, face) else 0.0
 
+    def _axis_range(self, low, high, origin, limit):
+        """Return occupied voxel indices, retaining visible zero-thickness planes."""
+        start = math.floor(low * self.res) - origin
+        end = math.floor(high * self.res) - origin
+        if high - low <= 1e-9:
+            coordinate = low * self.res
+            nearest = round(coordinate)
+            # Put a plane exactly on a voxel boundary in the preceding interior cell;
+            # otherwise use the cell containing the plane. Clamp outer model faces in.
+            index = (nearest - 1 if abs(coordinate - nearest) <= 1e-8
+                     else math.floor(coordinate)) - origin
+            index = max(0, min(max(0, limit - 1), index))
+            return index, min(limit, index + 1)
+        return max(0, start), min(limit, max(start, end))
+
     def mark_cube(self, cube, grid, ox, oy, oz, w, h, d):
-        """把一个 cube 占据的体素标记进 grid。
+        """Legacy diagnostic rasterizer; standard collision uses ``compress_adaptive``.
+
+        This voxel path marks a cube into a grid for visual/occupancy analysis.
         对旋转 cube 用逆旋转+中心点采样判断体素是否真在旋转体内(细粒度斜切面)。
         对面壳/局部镂空 cube(某面覆盖率低)只在该实心方向建薄壳碰撞。"""
         x0, y0, z0, x1, y1, z1 = cube_aabb(cube)
         # 体素索引 = floor(坐标*res) - floor(全局min*res)。用 floor 对齐 build_grid 的偏移,
         # 避免 int(round()) 对负值向零截断导致范围错位(模型负坐标时循环膨胀/网格错位)。
-        vx0 = max(0, math.floor(x0 * self.res) - ox)
-        vy0 = max(0, math.floor(y0 * self.res) - oy)
-        vz0 = max(0, math.floor(z0 * self.res) - oz)
-        vx1 = min(w, math.floor(x1 * self.res) - ox)
-        vy1 = min(h, math.floor(y1 * self.res) - oy)
-        vz1 = min(d, math.floor(z1 * self.res) - oz)
+        vx0, vx1 = self._axis_range(x0, x1, ox, w)
+        vy0, vy1 = self._axis_range(y0, y1, oy, h)
+        vz0, vz1 = self._axis_range(z0, z1, oz, d)
 
         rot = cube.get('rotation')
         from parse_model import is_hollow_cube
 
-        # 判定"空心壳": 面数少 或 存在实心率极低(≈空)的面。
-        # (uv 修复后 _face_solid 能正确反映顶空 up=0 → 这类"有面没贴图"是空心墙盒,
-        #  而不是实心。旧 is_hollow_cube 只看 tex 字段存在, 漏判空面。)
-        if rot is None and self.tex_img is not None:
-            n_empty = sum(1 for f in ('north','east','south','west','up','down')
-                          if self._face_solid(cube, f) < 0.5)
-            is_hollow = is_hollow_cube(cube) or (n_empty >= 1)
-        else:
-            is_hollow = is_hollow_cube(cube) and rot is None
+        # 判定"空心壳": 面数少 或 存在"真空面"(实心率≈0, 即该面没贴图)。
+        # 阈值 0.1 = 只把"几乎全透明(没贴图)"的面算空。
+        # 不能用 0.5: 实心板上某面带透明区(如顶板 north=0.31)会被误判成空心壳,
+        # 导致整块被拆成边缘薄壁、中间镂空(顶部碰撞缺失的根因)。
+        # 真正没贴图的面实心率 ≈0.0, 与"带透明的面"区分开。
+        # Collision follows model geometry, not transparent pixels in the material.
+        # Only elements explicitly modeled as open shells are treated as hollow.
+        is_hollow = is_hollow_cube(cube) and rot is None
 
         if is_hollow and rot is None:
             # 空心壳(如鸡舍墙盒): 逐面薄壳 + 投射 —— 顶面空则顶不建墙, 内部留空
             self._mark_hollow(cube, grid, ox, oy, oz, w, h, d, vx0, vy0, vz0, vx1, vy1, vz1)
             return
-        if rot is None and self.tex_img is not None:
-            # 非壳: 任意面存在空区 → 逐面重建(反映真实渲染面)
-            has_hole = any(self._face_solid(cube, f) < 1.0 for f in ('north','east','south','west','up','down'))
-            if has_hole:
-                from face_coverage import rebuild_voxels_from_texture
-                rebuild_voxels_from_texture(cube, self.tex_img, self.tex_w, self.tex_h,
-                                            grid, ox, oy, oz, w, h, d, self.res,
-                                            self.tex_uvw, self.tex_uvh)
-                return
         if rot is None:
             # 全实心: 快路径
             for x in range(vx0, vx1):
@@ -92,8 +93,14 @@ class VoxelGrid:
         origin = rot['origin']
         frm = cube['from']
         to = cube['to']
-        f_min = (min(frm[0], to[0]), min(frm[1], to[1]), min(frm[2], to[2]))
-        f_max = (max(frm[0], to[0]), max(frm[1], to[1]), max(frm[2], to[2]))
+        raw_min = (min(frm[0], to[0]), min(frm[1], to[1]), min(frm[2], to[2]))
+        raw_max = (max(frm[0], to[0]), max(frm[1], to[1]), max(frm[2], to[2]))
+        # A plane cube has visible area despite having no volume. Give only its
+        # zero-width local axes half a voxel on either side for center sampling.
+        f_min = tuple(raw_min[i] - self.voxel_size / 2 if raw_max[i] - raw_min[i] <= 1e-9 else raw_min[i]
+                      for i in range(3))
+        f_max = tuple(raw_max[i] + self.voxel_size / 2 if raw_max[i] - raw_min[i] <= 1e-9 else raw_max[i]
+                      for i in range(3))
         for x in range(vx0, vx1):
             for y in range(vy0, vy1):
                 for z in range(vz0, vz1):
@@ -265,10 +272,32 @@ def compress_voxels(grid, origin, w, h, d, res):
     return boxes
 
 
+def ensure_collidable_boxes(boxes, min_thickness=1.0 / 16.0):
+    """Give explicitly included flat model planes minimal thickness.
+
+    Blockbench legitimately exports many visible paper/trim planes with from == to
+    on one axis. The safe collision default filters those as visual-only before
+    generation. This fallback exists only for callers that explicitly opt them in;
+    Shapes.box with a zero extent is empty for collision.
+    """
+    fixed = []
+    for box in boxes:
+        coords = list(box)
+        for axis in range(3):
+            low, high = coords[axis], coords[axis + 3]
+            if high - low <= 1e-9:
+                center = (low + high) / 2.0
+                coords[axis] = center - min_thickness / 2.0
+                coords[axis + 3] = center + min_thickness / 2.0
+        fixed.append(tuple(coords))
+    return fixed
+
+
 def to_java(boxes, normalize=True):
     """生成 Java Shapes.or(box(...)) 代码。
     normalize=True: 坐标 ÷16 归一化到 0~1 (Shapes.box 需要)。
     normalize=False: 原始模型坐标 (0~16)。"""
+    boxes = ensure_collidable_boxes(boxes)
     lines = []
     if not boxes:
         return "Shapes.empty()"
@@ -280,7 +309,10 @@ def to_java(boxes, normalize=True):
             x0, y0, z0, x1, y1, z1 = b
         comma = "," if i < len(boxes) - 1 else ""
         lines.append(f"        Shapes.box({x0:.4f}, {y0:.4f}, {z0:.4f}, {x1:.4f}, {y1:.4f}, {z1:.4f}){comma}")
-    lines.append(")")
+    # Optimize the voxel shape after combining boxes. Besides reducing runtime
+    # shape complexity, this removes internal/shared faces that otherwise show
+    # up as doubled selection-outline lines in-game.
+    lines.append(").optimize()")
     return "\n".join(lines)
 
 
@@ -294,11 +326,16 @@ def format_boxlist(boxes):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='生成碰撞箱 Java 代码 (纯几何路径)')
+    parser = argparse.ArgumentParser(description='按元素完整几何 AABB 生成碰撞箱 Java 代码')
     parser.add_argument('model', help='bbmodel 或 model JSON 路径')
     parser.add_argument('--resolution', type=int, default=16, help='每单位体素数 (默认16=精确到0.0625格)')
     parser.add_argument('--exclude', default='', help='排除的 cube 名称, 逗号分隔')
     parser.add_argument('--prefix', default='', help='排除名称前缀 (如 noCollision_)')
+    parser.add_argument('--include-thin', action='store_true', help='显式纳入薄片/零厚度元素')
+    parser.add_argument('--exclude-shells', action='store_false', dest='include_shells', default=True,
+                        help='显式排除正体积的开口面壳 (默认完整 AABB 碰撞)')
+    parser.add_argument('--exclude-rotated', action='store_false', dest='include_rotated', default=True,
+                        help='显式排除旋转元素 (默认每元素一个完整 AABB)')
     args = parser.parse_args()
 
     cubes = load_cubes(args.model)
@@ -308,21 +345,29 @@ def main():
         cubes = [c for c in cubes if c['name'] not in ex and not (args.prefix and c['name'].startswith(args.prefix))]
         print(f"过滤: {before} -> {len(cubes)} 个 cube")
 
-    vg = VoxelGrid(args.resolution)
-    grid, origin, (w, h, d) = vg.build_grid(cubes)
-    boxes = compress_voxels(grid, origin, w, h, d, args.resolution)
+    from parse_model import filter_collision_cubes
+    cubes, skipped = filter_collision_cubes(
+        cubes, include_thin=args.include_thin,
+        include_shells=args.include_shells, include_rotated=args.include_rotated)
+    for cube, reasons in skipped:
+        print(f"[默认视觉件不碰撞] #{cube['index']} {cube['name']}: {', '.join(reasons)}")
+    if not cubes:
+        print("没有可碰撞的实心元素; 输出 Shapes.empty()")
+        print("\n=== Java 代码 ===\nShapes.empty()")
+        return
 
-    print(f"\n=== 体素化结果 ===")
-    print(f"体素网格: {w}x{h}x{d} ({w*h*d} voxels, res={args.resolution})")
+    boxes, _rotated = compress_adaptive(
+        cubes, res=args.resolution, skip_rotated_decor=not args.include_rotated,
+        include_thin=args.include_thin)
+    boxes = ensure_collidable_boxes(boxes)
+
+    print(f"\n=== 几何 AABB 结果 ===")
+    print(f"按元素几何 AABB 构建 (薄壳填满、斜体单盒, res={args.resolution})")
     print(f"合并后: {len(boxes)} 个 box")
     print(f"\n=== box 列表 ===")
     print(format_boxlist(boxes))
     print(f"\n=== Java 代码 ===")
     print(to_java(boxes))
-
-
-if __name__ == '__main__':
-    main()
 
 
 def _is_gradient(cube, res=8):
@@ -333,12 +378,20 @@ def _is_gradient(cube, res=8):
     return None
 
 
+THIN_PLATE_THICKNESS = 1.5
+
+
 def segment_rotated(cube, seg_count=3, res=16):
     """把旋转 cube 沿最优轴分成 seg_count 段阶梯碰撞箱。
     每段用体素中心逆旋转采样, 得到该段的紧凑 AABB (空气率远小于整体外接盒)。
 
     防护 (薄元素/退化段):
-    - AABB 直径 < 3 单位 (薄条/面片): 直接返回外接 AABB 单 box (分段无意义)
+    - AABB 所有轴跨度 < 3 单位 (小型装饰): 直接返回外接 AABB 单 box
+    - 任一轴厚度 <= THIN_PLATE_THICKNESS 的薄板: 直接返回外接 AABB 单 box。
+      薄板的体素命中率极低, 分段只会把一片斜面拆成几十个 1 单位小盒, 于是
+      选中轮廓在模型周围画出一圈小方框 (唱片机喇叭就是这样暴露的)。一片薄板
+      一个外接盒既省盒数, 又不会把大片空气算进碰撞。
+    - 有厚度的细长斜体仍允许沿长轴分段, 避免大斜面把整片空气纳入碰撞
     - 段无命中体素: 跳过
     - 段边界非法 (负数/超出 AABB): 夹紧
     返回 [(x0,y0,z0,x1,y1,z1)] — 至少 1 段 (兜底外接 AABB)。
@@ -346,8 +399,11 @@ def segment_rotated(cube, seg_count=3, res=16):
     from parse_model import inverse_rotate_point
     aabb = cube_aabb(cube)
     x0, y0, z0, x1, y1, z1 = aabb
-    # 薄元素防护: 最小边 < 3 单位 → 分段没意义, 直接外接盒
-    if min(x1 - x0, y1 - y0, z1 - z0) < 3.0:
+    # 小型装饰防护: 三个方向都短时分段收益有限。
+    if max(x1 - x0, y1 - y0, z1 - z0) < 3.0:
+        return [aabb]
+    # 薄板防护: 体素命中率极低, 分段只会产生一堆 1 单位小盒。
+    if min(x1 - x0, y1 - y0, z1 - z0) <= THIN_PLATE_THICKNESS:
         return [aabb]
     rot = cube['rotation']
     origin = rot['origin']
@@ -415,7 +471,7 @@ def dedupe_boxes(boxes, res=16):
     return out
 
 
-def planar_merge(boxes, tol=0.02):
+def planar_merge(boxes, tol=0.02, min_thickness=None):
     """【去重·消除黑线】删被包含 box + 合并同向相邻 box。
 
     映射/薄壳分段会产生: ①被其他 box 完全包含的多余 box; ②同一薄片面被切成
@@ -425,7 +481,14 @@ def planar_merge(boxes, tol=0.02):
     1. 删"被另一个 box 完全包含"的 box (维度被动被内层盖住, 多余)。
     2. 合并两个 box: 共享一个厚度方向(一个维度区间相同/近同), 且在其余两个轴
        上相邻(一个的 hi ≈ 另一个的 lo, 容差 tol) → 并成一个更大 box。
+    3. (新增) min_thickness: 过滤极薄装饰盒 — 体素化会把纹理边缘/贴图缝体素化
+       成 <min_thickness 的超薄盒(1/256格装饰边框), 这些不是实体碰撞。任一轴
+       厚度 < min_thickness 的盒移除。默认 None=不过滤。
     """
+    # 0. 过滤极薄装饰盒
+    if min_thickness is not None:
+        boxes = [b for b in boxes
+                 if (b[3]-b[0]) >= min_thickness or (b[4]-b[1]) >= min_thickness or (b[5]-b[2]) >= min_thickness]
     # 1. 删被包含
     def contains(outer, inner):
         return (outer[0] <= inner[0] + tol and outer[1] <= inner[1] + tol and outer[2] <= inner[2] + tol
@@ -478,48 +541,127 @@ def planar_merge(boxes, tol=0.02):
     return kept
 
 
-def compress_adaptive(cubes, res=16, seg_count=3, skip_rotated_decor=True, tex_img=None, tex_size=(0, 0), tex_uv=(16, 16)):
-    """自适应合并: 非旋转 cube 纹理覆盖体素化; 旋转 cube 处理。
+def merge_exact_union_boxes(boxes, tol=1e-6):
+    """Remove contained boxes and merge overlapping/face-adjacent boxes only when
+    their union is itself a rectangular box. This avoids the two-outline-line
+    artifact without filling L-shaped air gaps."""
+    def volume(b):
+        return max(0.0, b[3]-b[0]) * max(0.0, b[4]-b[1]) * max(0.0, b[5]-b[2])
+    current = []
+    # Equal candidates can come from mutually exclusive states/material
+    # variants. Removing every box as "contained by an identical box" would
+    # leave an empty collision shape, so deduplicate before containment checks.
+    for box in boxes:
+        candidate = tuple(box)
+        if volume(candidate) <= tol:
+            continue
+        if not any(all(abs(candidate[axis] - existing[axis]) <= tol
+                       and abs(candidate[axis + 3] - existing[axis + 3]) <= tol
+                       for axis in range(3)) for existing in current):
+            current.append(candidate)
+    changed = True
+    while changed:
+        changed = False
+        # Remove boxes fully contained by another one.
+        kept = []
+        for i, b in enumerate(current):
+            if any(i != j and all(current[j][a] <= b[a] + tol and current[j][a+3] >= b[a+3] - tol for a in range(3))
+                   for j in range(len(current))):
+                changed = True
+                continue
+            kept.append(b)
+        current = kept
+        for i in range(len(current)):
+            a = current[i]
+            for j in range(i + 1, len(current)):
+                b = current[j]
+                u = (min(a[0], b[0]), min(a[1], b[1]), min(a[2], b[2]),
+                     max(a[3], b[3]), max(a[4], b[4]), max(a[5], b[5]))
+                # A rectangular union has no missing volume. Permit only overlap
+                # or shared faces, never diagonal/corner-only contact.
+                inter = 1.0
+                for axis in range(3):
+                    inter *= max(0.0, min(a[axis+3], b[axis+3]) - max(a[axis], b[axis]))
+                if abs(volume(u) - (volume(a) + volume(b) - inter)) <= tol:
+                    current[i] = u
+                    del current[j]
+                    changed = True
+                    break
+            if changed:
+                break
+    return current
 
-    【斜体处理】skip_rotated_decor=True (默认 — 报备模式):
-    非轴向旋转元素 (22.5°/45°/135° 等) **直接分离到 rotated 报备**, 不分段贴合并入。
-    (旧版先 segment_rotated 分段拟合、空气率≤25% 就并入 main, 会产生碎片——已废弃。)
 
-    返回 (main_boxes, rotated_boxes)。
-    - main: 非旋转 cube 按纹理覆盖体素化(薄壳/实心/局部镂空)
-    - rotated: 斜体(非轴向)外接 AABB, 由人类决定是否并入
-    轴向 (0/90/180/270) 旋转并入 main。
+def compress_adaptive(cubes, res=16, seg_count=3, skip_rotated_decor=False, include_thin=False,
+                      tex_img=None, tex_size=(0, 0), tex_uv=(16, 16)):
+    """Build one full AABB per positive-volume model element.
+
+    Collision follows geometric volume, not texture-face coverage: a partial
+    face set must not turn a structural side into a hollow sliver. Rotated
+    elements use one rotated AABB (air exposure is preferable to a missing
+    collider or a staircase made of several boxes). Within a Blockbench group,
+    coplanar cover/shell pieces close to a positive-volume core are folded into
+    the same outer AABB, so book covers are included without turning a distant
+    zero-thickness handle/flame into a collider. Standalone zero-volume planes
+    are visual-only unless explicitly opted in.
+
+    ``skip_rotated_decor`` remains as a compatibility opt-out for an explicit
+    caller; the standard deployment path leaves it false.
     """
     from parse_model import cube_aabb
-    main = []
-    rotated = []
+    main, rotated, groups = [], [], {}
     for cube in cubes:
-        if cube.get('rotation'):
-            r = cube['rotation']
-            ang = max(abs(a) for a in r.get('angles', [0, 0, 0])) % 180
-            if ang == 0:
-                ang = abs(r.get('raw', {}).get('angle', 0)) % 180
-            if ang not in (0, 90):
-                if not skip_rotated_decor:
-                    # 显式要求处理斜体: 分段贴合
-                    segs = segment_rotated(cube, seg_count=seg_count, res=res)
-                    if segs:
-                        main.extend(segs)
-                    else:
-                        rotated.append(cube_aabb(cube))
-                else:
-                    # 默认: 斜体分离报备 (外接 AABB, 由人类决定)
-                    rotated.append(cube_aabb(cube))
-                continue
-            main.append(cube_aabb(cube))
+        group = cube.get('group')
+        if group is None:
+            groups.setdefault(None, []).append(cube)
         else:
-            # 非旋转 cube: 有纹理时走纹理覆盖分支(薄壳/局部镂空), 无纹理退回实心
-            if tex_img is not None:
-                vg = VoxelGrid(res, tex_img=tex_img, tex_size=tex_size, tex_uv=tex_uv)
-                g, o, dims = vg.build_grid([cube])
-                main.extend(compress_voxels(g, o, dims[0], dims[1], dims[2], res))
+            groups.setdefault(group, []).append(cube)
+
+    for group_id, members in groups.items():
+        positive, planes = [], []
+        for cube in members:
+            target = positive if all(abs(cube['to'][axis] - cube['from'][axis]) > 1e-9
+                                     for axis in range(3)) else planes
+            target.append(cube)
+        positive_boxes = [cube_aabb(cube) for cube in positive]
+
+        def union(boxes):
+            return (min(box[0] for box in boxes), min(box[1] for box in boxes), min(box[2] for box in boxes),
+                    max(box[3] for box in boxes), max(box[4] for box in boxes), max(box[5] for box in boxes))
+
+        nearby_plane_boxes = []
+        if group_id is not None and positive_boxes:
+            core = union(positive_boxes)
+            margin = 1.25  # model pixels; covers paper skins, not distant handles/flame ornaments
+            for plane in planes:
+                box = cube_aabb(plane)
+                if (box[0] >= core[0] - margin and box[1] >= core[1] - margin and box[2] >= core[2] - margin
+                        and box[3] <= core[3] + margin and box[4] <= core[4] + margin
+                        and box[5] <= core[5] + margin):
+                    nearby_plane_boxes.append(box)
+
+        if group_id is not None and positive_boxes and nearby_plane_boxes:
+            group_box = union(positive_boxes + nearby_plane_boxes)
+            group_is_rotated = any(cube.get('rotation') for cube in positive)
+            if group_is_rotated and skip_rotated_decor:
+                rotated.append(group_box)
             else:
-                vg = VoxelGrid(res)
-                g, o, dims = vg.build_grid([cube])
-                main.extend(compress_voxels(g, o, dims[0], dims[1], dims[2], res))
-    return dedupe_boxes(main, res), dedupe_boxes(rotated, res)
+                main.append(group_box)
+            continue
+
+        for cube in positive:
+            box = cube_aabb(cube)
+            is_rotated = cube.get('rotation') is not None
+            if is_rotated and skip_rotated_decor:
+                rotated.append(box)
+            else:
+                main.append(box)
+        for plane in planes:
+            if include_thin:
+                main.append(cube_aabb(plane))
+    main = merge_exact_union_boxes(dedupe_boxes(main, res))
+    return main, dedupe_boxes(rotated, res)
+
+
+if __name__ == '__main__':
+    main()

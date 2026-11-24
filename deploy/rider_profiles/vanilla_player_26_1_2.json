@@ -1,0 +1,29 @@
+{
+  "minecraft_version": "26.1.2",
+  "source_client_classes": [
+    "EntityType.PLAYER",
+    "Avatar",
+    "LivingEntity.SLEEPING_DIMENSIONS",
+    "AvatarRenderer.scale",
+    "HumanoidModel.createMesh/setupAnim",
+    "PlayerModel.createMesh"
+  ],
+  "entity_dimensions_blocks": {
+    "standing": {"aabb": [0.6, 1.8], "eye_height": 1.62, "vehicle_attachment": [0.0, 0.6, 0.0]},
+    "sleeping": {"aabb": [0.2, 0.2], "eye_height": 0.2}
+  },
+  "avatar_render_scale": 0.9375,
+  "player_model_parts_px": {
+    "head": [8, 8, 8],
+    "torso": [8, 12, 4],
+    "arm_classic_skin": [4, 12, 4],
+    "arm_slim_skin": [3, 12, 4],
+    "leg": [4, 12, 4]
+  },
+  "passenger_pose_radians": {
+    "arms_x_delta": -0.62831855,
+    "legs_x": -1.4137167,
+    "right_leg_y": 0.31415927,
+    "left_leg_y": -0.31415927
+  }
+}

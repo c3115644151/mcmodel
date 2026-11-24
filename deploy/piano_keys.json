@@ -1,0 +1,8 @@
+{
+  "_comment": "Piano keyboard, built as a shelf in model pixels: a wooden slip, one continuous ivory field, raised black keys butting the nameboard. The key grid comes from PianoBlock.java; these knobs are the proportions a real keyboard reads by.",
+  "field_back_px": 5.7,
+  "black_width_px": 1.1,
+  "black_raise_px": 1.0,
+  "black_front_px": 1.9,
+  "black_back_px": 5.6
+}

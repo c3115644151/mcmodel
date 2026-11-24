@@ -1,0 +1,43 @@
+{
+  "lanes": [
+    {
+      "name": "板（下）",
+      "lane": 0,
+      "edges": {
+        "west": 4,
+        "east": 9
+      },
+      "connectors": {
+        "west": 5,
+        "east": 14
+      },
+      "base": 7
+    },
+    {
+      "name": "板（中）",
+      "lane": 1,
+      "edges": {
+        "west": 3,
+        "east": 10
+      },
+      "base": 6,
+      "connectors": {
+        "east": 13,
+        "west": 0
+      }
+    },
+    {
+      "name": "板（上）",
+      "lane": 2,
+      "connectors": {
+        "west": 1,
+        "east": 12
+      },
+      "edges": {
+        "west": 2,
+        "east": 11
+      },
+      "base": 8
+    }
+  ]
+}

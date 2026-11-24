@@ -1,0 +1,8 @@
+{
+  "name": "wooden_stool",
+  "type": "seat",
+  "model": "src/main/resources/assets/pastoral_home/models/block/wooden_stool.json",
+  "seat_height_blocks": 0.5,
+  "behind_offset_blocks": 0,
+  "passenger_offset_px": [0, 0.16, 0]
+}

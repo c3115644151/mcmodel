@@ -14,88 +14,129 @@
 import argparse
 import sys
 import os
-from parse_model import load_cubes, merge_overlapping_hollow_cubes, all_bounds
-from generate import VoxelGrid, compress_voxels, compress_adaptive
+import math
+from parse_model import load_cubes, merge_overlapping_hollow_cubes, all_bounds, filter_collision_cubes
+from generate import VoxelGrid, compress_voxels, compress_adaptive, ensure_collidable_boxes
+
+
+def calc_metrics(grid, origin, w, h, d, res, boxes):
+    """逐体素比较几何与碰撞，空气误占和漏碰独立计数。
+
+    采样点取体素中心；扫描范围包含几何和碰撞箱的并集，因而不会漏掉
+    模型边界外的碰撞，也不会让多占空气与漏掉模型互相抵消。
+    """
+    gx0, gy0, gz0 = origin
+    gx1, gy1, gz1 = gx0 + w, gy0 + h, gz0 + d
+    bx0 = min((math.floor(b[0] * res) for b in boxes), default=gx0)
+    by0 = min((math.floor(b[1] * res) for b in boxes), default=gy0)
+    bz0 = min((math.floor(b[2] * res) for b in boxes), default=gz0)
+    bx1 = max((math.ceil(b[3] * res) for b in boxes), default=gx1)
+    by1 = max((math.ceil(b[4] * res) for b in boxes), default=gy1)
+    bz1 = max((math.ceil(b[5] * res) for b in boxes), default=gz1)
+    x0, y0, z0 = min(gx0, bx0), min(gy0, by0), min(gz0, bz0)
+    x1, y1, z1 = max(gx1, bx1), max(gy1, by1), max(gz1, bz1)
+
+    nx, ny, nz = x1 - x0, y1 - y0, z1 - z0
+    collision = bytearray(nx * ny * nz)
+    for box in boxes:
+        ix0 = max(x0, math.floor(box[0] * res)); iy0 = max(y0, math.floor(box[1] * res)); iz0 = max(z0, math.floor(box[2] * res))
+        ix1 = min(x1, math.ceil(box[3] * res)); iy1 = min(y1, math.ceil(box[4] * res)); iz1 = min(z1, math.ceil(box[5] * res))
+        for ix in range(ix0, ix1):
+            base_x = (ix - x0) * ny * nz
+            for iy in range(iy0, iy1):
+                base_y = base_x + (iy - y0) * nz
+                for iz in range(iz0, iz1):
+                    collision[base_y + iz - z0] = 1
+
+    rendered = collided = overlap = false_positive = false_negative = 0
+    for ix in range(x0, x1):
+        for iy in range(y0, y1):
+            for iz in range(z0, z1):
+                idx = ((ix - x0) * ny + iy - y0) * nz + iz - z0
+                in_box = collision[idx] != 0
+                inside_grid = gx0 <= ix < gx1 and gy0 <= iy < gy1 and gz0 <= iz < gz1
+                in_geom = inside_grid and grid[ix - gx0][iy - gy0][iz - gz0]
+                rendered += bool(in_geom)
+                collided += in_box
+                overlap += bool(in_geom and in_box)
+                false_positive += bool(in_box and not in_geom)
+                false_negative += bool(in_geom and not in_box)
+
+    pct = lambda n, total: (n / total * 100) if total else 0.0
+    return {
+        'air_percent': pct(false_positive, rendered),
+        'miss_percent': pct(false_negative, rendered),
+        'coverage_percent': pct(overlap, rendered),
+        'precision_percent': pct(overlap, collided),
+        'render_voxels': rendered,
+        'collision_voxels': collided,
+        'air_voxels': false_positive,
+        'miss_voxels': false_negative,
+    }
 
 
 def calc_air(grid, origin, w, h, d, res, boxes):
-    """空气暴露率 = 碰撞箱体积 超出 模型渲染体积 的比例 (你的定义)。
+    """兼容旧调用：返回独立计算的空气误占率。"""
+    return calc_metrics(grid, origin, w, h, d, res, boxes)['air_percent']
 
-    正确基准 (统一模型坐标, 逐体素):
-      - 模型渲染体积 = 真几何占据体素数 (grid 中为真的体素)      → render_vol
-      - 碰撞箱体积     = 被任何 box 覆盖的体素数 (box 盖住的体素) → coll_vol
-      - 暴露率 = (coll_vol - render_vol) / render_vol * 100
-        碰撞箱 > 渲染 = 多盖了不存在的空气 = 暴露。
 
-    air > 0: 碰撞箱盖多了(空气暴露); air = 0: 完全贴合; 若有漏(<0)另计。
+def metric_resolution(cubes, requested_res, max_voxels=2_000_000):
+    """Choose a bounded evaluation resolution without changing generated boxes."""
+    from parse_model import cube_aabb
+    if not cubes:
+        return requested_res
+    bounds = [cube_aabb(cube) for cube in cubes]
+    extents = [max(b[i + 3] for b in bounds) - min(b[i] for b in bounds) for i in range(3)]
+    volume = max(1.0, extents[0] * extents[1] * extents[2])
+    bounded = max(1, int((max_voxels / volume) ** (1.0 / 3.0)))
+    return min(requested_res, bounded)
+
+
+def build_collision_reference_grid(cubes, res):
+    """Rasterize positive-volume source cuboids; ignore missing texture faces.
+
+    Rotated elements are sampled in their actual orientation so the measured
+    air-exposure rate reflects the single-AABB approximation instead of comparing
+    the generated AABB against itself.
     """
-    render_vol = 0
-    coll_vol = 0
-    for x in range(w):
-        for y in range(h):
-            for z in range(d):
-                mx = (x + origin[0]) / res
-                my = (y + origin[1]) / res
-                mz = (z + origin[2]) / res
-                in_geom = grid[x][y][z]
-                in_box = any(b[0] <= mx < b[3] and b[1] <= my < b[4] and b[2] <= mz < b[5] for b in boxes)
-                if in_geom:
-                    render_vol += 1
-                if in_box:
-                    coll_vol += 1
-    if render_vol == 0:
-        return 0.0
-    return (coll_vol - render_vol) / render_vol * 100
+    if not cubes:
+        return [], (0, 0, 0), (0, 0, 0)
+    from generate import VoxelGrid
+    face = {"texture": "#collision_geometry", "uv": [0, 0, 1, 1]}
+    solid_cubes = []
+    for cube in cubes:
+        solid = dict(cube)
+        solid["faces"] = {direction: face for direction in
+                          ("north", "east", "south", "west", "up", "down")}
+        solid_cubes.append(solid)
+    return VoxelGrid(res).build_grid(solid_cubes)
 
 
 def solve_zero_exposure(cubes, res=16, seg_count=6, source=None):
-    """默认求解: 体素化"实际渲染结构"并压缩, 碰撞箱 == 渲染结构 (空气暴露 0%)。
+    """Compatibility entry point: generate full element AABBs and measure coverage.
 
-    思路 (纹理覆盖驱动, 实证为能到 0% 的稳健路径):
-      - 从 bbmodel 源读内嵌纹理图 (Pillow)
-      - VoxelGrid.mark_cube 用面覆盖率判定: 高覆盖=实心(建薄壳/实心), 低覆盖=镂空(空气)
-      - 这样"只画部分纹理/局部透明"的 cube 不再按 AABB 全填, 槽壁生成正确薄壳
-      - 直接压缩该体素网格 → 碰撞箱 == 渲染结构
-
-    背景: 旧版用 face_pair_boxes 会把面实心区沿整轴映射成实心板, 无法生成薄墙,
-    对"开放顶槽"类模型(陶土盆花架)只能到 ~49% 空气。改为压缩纹理感知网格可得 0.00%。
-    全实心 cube 被 mark_cube 体素化为整块, 该路径天然等价于 AABB, 无需特判。
-
-    返回 (boxes, air%, box_count)。
+    Faces and UV transparency describe rendering, not player occupancy. Positive-
+    volume shells and tilted elements therefore use their full (rotated) source
+    bounds; zero-volume planes are filtered by the caller by default.
     """
-    from generate import VoxelGrid, compress_voxels
-
-    # 加载纹理图 (Pillow) 供面覆盖检测 (含 uv 坐标系尺寸)
-    tex_img, tex_w, tex_h, tex_uvw, tex_uvh = None, 0, 0, 16, 16
-    if source:
-        try:
-            from face_coverage import load_texture_from_bbmodel
-            tex_img, tex_w, tex_h, tex_uvw, tex_uvh = load_texture_from_bbmodel(source)
-        except Exception:
-            tex_img, tex_w, tex_h, tex_uvw, tex_uvh = None, 0, 0, 16, 16
-
-    # 体素化真渲染结构 (mark_cube 对镂空/薄壳 cube 建薄壳, 对全实心 cube 建整块)
-    vg = VoxelGrid(res, tex_img=tex_img, tex_size=(tex_w, tex_h), tex_uv=(tex_uvw, tex_uvh))
-    grid, origin, (w, h, d) = vg.build_grid(cubes)
-    # 压缩体素 → 轴对齐 box 列表 (碰撞箱 == 渲染结构)
-    boxes = compress_voxels(grid, origin, w, h, d, res)
-    air = calc_air(grid, origin, w, h, d, res, boxes)
+    from generate import ensure_collidable_boxes, merge_exact_union_boxes
+    from parse_model import cube_aabb
+    boxes = merge_exact_union_boxes([cube_aabb(cube) for cube in cubes])
+    boxes = ensure_collidable_boxes(boxes)
+    metric_res = metric_resolution(cubes, res)
+    grid, origin, dims = build_collision_reference_grid(cubes, metric_res)
+    air = calc_metrics(grid, origin, *dims, metric_res, boxes)['air_percent'] if cubes else 0.0
     return boxes, air, len(boxes)
 
 
-    """扫描不同分段数, 返回 [(seg_count, boxes, box_count, air_rate), ...]
-    用 res=8 扫描(快), 真实体积只算一次。"""
-    # 预计算真实占据体积(一次)
-    vg = VoxelGrid(res)
-    grid, origin, (w, h, d) = vg.build_grid(cubes)
-    true_vol = sum(1 for x in range(w) for y in range(h) for z in range(d) if grid[x][y][z])
-    options = []
-    for seg in range(1, 9):
-        # skip_rotated_decor=False: 需求模式要评估分段拟合空气率 (旋转元素也分段)
-        main, rotated = compress_adaptive(cubes, res=res, seg_count=seg, skip_rotated_decor=False)
-        air = calc_air(grid, origin, w, h, d, res, main)
-        options.append((seg, main, len(main), air))
-    return options
+def scan_options(cubes, res=8, include_thin=False):
+    """Return the single standard full-AABB plan and its volume metrics."""
+    eval_res = metric_resolution(cubes, res)
+    grid, origin, dims = build_collision_reference_grid(cubes, eval_res)
+    main, _rotated = compress_adaptive(cubes, res=res, skip_rotated_decor=False,
+                                       include_thin=include_thin)
+    main = ensure_collidable_boxes(main)
+    return [(1, main, len(main), calc_air(grid, origin, *dims, eval_res, main))]
 
 
 def _box_vol(boxes, res, origin):
@@ -133,16 +174,26 @@ def main():
     ap.add_argument('--max-boxes', type=int, default=None, help='最大 box 数')
     ap.add_argument('--max-air', type=float, default=None, help='最大空气率(%)')
     ap.add_argument('--res', type=int, default=16, help='体素分辨率')
+    ap.add_argument('--include-thin', action='store_true', help='显式纳入薄片/零厚度元素')
+    ap.add_argument('--exclude-shells', action='store_false', dest='include_shells', default=True,
+                    help='显式排除开口面壳 (默认按完整 AABB 碰撞)')
+    ap.add_argument('--exclude-rotated', action='store_false', dest='include_rotated', default=True,
+                    help='显式排除斜体 (默认每个正体积斜体使用一个 AABB)')
     args = ap.parse_args()
 
     cubes = load_cubes(args.model)
+    cubes, skipped = filter_collision_cubes(
+        cubes, include_thin=args.include_thin,
+        include_shells=args.include_shells, include_rotated=args.include_rotated)
+    for cube, reasons in skipped:
+        print(f"[默认视觉件不碰撞] #{cube['index']} {cube['name']}: {', '.join(reasons)}")
     cubes = merge_overlapping_hollow_cubes(cubes)
     # 扫描用 res=8(快), 精确输出用 args.res
-    options = scan_options(cubes, 8)
+    options = scan_options(cubes, 8, include_thin=args.include_thin)
     seg, boxes, nb, air = choose_option(options, args.max_boxes, args.max_air)
 
     print(f"=== 参数优化结果 ===")
-    print(f"斜面分段数: {seg}")
+    print("碰撞方案: 每个正体积模型元素使用完整 AABB")
     print(f"box 数: {nb} (约束: max_boxes={args.max_boxes}, max_air={args.max_air})")
     print(f"空气率: {air:.1f}%")
     print(f"\n可用方案扫描:")

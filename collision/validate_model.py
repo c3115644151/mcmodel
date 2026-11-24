@@ -21,6 +21,9 @@ import sys
 import os
 import argparse
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 # MC element rotation 只允许 -45/-22.5/0/22.5/45
 VALID_ROTATION_ANGLES = {-45.0, -22.5, 0.0, 22.5, 45.0}
 # 方块合法坐标范围
@@ -43,6 +46,46 @@ def _model_max_span(model):
 def load_model(path):
     with open(path, encoding='utf-8') as f:
         return json.load(f)
+
+
+def resolve_inherited_gui(model, path, visited=None):
+    """Resolve display.gui through model parents, including vanilla block/block."""
+    gui = model.get('display', {}).get('gui')
+    if gui:
+        return gui
+    visited = visited or set()
+    current_path = os.path.abspath(path)
+    if current_path in visited:
+        return None
+    visited.add(current_path)
+    parent = model.get('parent')
+    if not parent:
+        return None
+    namespace, separator, relative = parent.partition(':')
+    if not separator:
+        namespace, relative = 'minecraft', parent
+    if namespace == 'minecraft' and relative == 'block/block':
+        # Vanilla's block/block model defines the standard GUI isometric transform.
+        return {
+            'rotation': [30, 225, 0],
+            'translation': [0, 0, 0],
+            'scale': [0.625, 0.625, 0.625],
+        }
+
+    parts = list(os.path.normpath(current_path).split(os.sep))
+    asset_index = next((i for i, part in enumerate(parts) if part == 'assets'), None)
+    if asset_index is None or asset_index + 1 >= len(parts):
+        return None
+    asset_root = os.sep.join(parts[:asset_index + 2])
+    if namespace != parts[asset_index + 1]:
+        return None
+    parent_path = os.path.join(asset_root, 'models', *relative.split('/')) + '.json'
+    if not os.path.isfile(parent_path):
+        return None
+    try:
+        return resolve_inherited_gui(load_model(parent_path), parent_path, visited)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
 
 
 def detect_issues(model, path):
@@ -149,9 +192,10 @@ def detect_issues(model, path):
     if not is_bbmodel:
         display = model.get('display', {})
         gui = display.get('gui')
-        if not gui:
+        inherited_gui = resolve_inherited_gui(model, path)
+        if not inherited_gui:
             issues.append(('WARN', 'MISSING_GUI_DISPLAY',
-                '缺 display.gui 配置, 物品栏图标可能显示异常（应加等轴测视角 rotation:[30,225,0]）',
+                '模型本身及父级均未提供 display.gui 变换, 物品栏图标可能显示异常（应加等轴测视角 rotation:[30,225,0]）',
                 'add_gui_display'))
         elif gui:
             rot = gui.get('rotation', [0, 0, 0])
@@ -170,7 +214,8 @@ def detect_issues(model, path):
             span = max(max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs))
             if span > 16:
                 # 跨格模型, 图标 scale 应 <= 0.5, 否则物品栏显示过大
-                scale = gui.get('scale', [1, 1, 1]) if gui else [1, 1, 1]
+                effective_gui = gui or inherited_gui
+                scale = effective_gui.get('scale', [1, 1, 1]) if effective_gui else [1, 1, 1]
                 max_scale = max(scale) if isinstance(scale, list) else 1
                 if max_scale > 0.5:
                     suggest = 0.32 if span > 30 else 0.45
@@ -250,6 +295,103 @@ def detect_variant_collision(model_dir, base_name, num_variants):
                 f'参考 FirewoodBundleBlock.SHAPES[level] 按层合并 AABB。',
                 None))
     return issues
+
+
+def normalize_bbmodel_to_mc(model):
+    """把 .bbmodel 原始 elements 标准化为 MC 可加载的 BlockElement。
+
+    .bbmodel 的内部格式与 MC 模型 JSON 差异(来自实际踩坑):
+      1. rotation 是数组 [rx,ry,rz] (EulerXYZ), MC 24+ 要 {angle,axis,origin} dict
+         (麦捆堆/纺车已验证; 数组格式会抛 "Expected rotation to be a JsonObject")。
+      2. 元素带大量 BB 私有字段 (name/box_uv/rescale/locked/...), MC BlockElement
+         反序列化遇未知字段会失败 → 只保留 from/to/rotation/faces。
+      3. texture 引用是整数 (0/1/2), MC 要 "#N" 字符串。
+      4. resolution 非 16 (如 256/128) 时 UV 是 256 网格, 需缩到 0~16。
+      5. 面 texture 为 None/缺失时 MC 报 "Missing texture", 应删除该 face。
+      6. **inflate**: BB 用它让 cube 相对 from/to 内外膨胀(缩进), MC 模型格式不支持此字段
+         (CuboidModelElement 无 inflate, 见反编译源码)。必须**烘焙进 from/to 坐标**:
+         from -= inflate, to += inflate (inflate>0 膨胀, <0 收缩)。丢失会导致同位置双 cube
+         重合 → z-fighting → 包边/细节消失 (绣球四角球就是此例)。
+
+    Returns: (规范化的 elements list, 需缩放 UV 的 scale 或 None)
+    """
+    elements = model.get('elements', [])
+    # 确定 texture_size / resolution 用于 UV 缩放
+    is_bb = 'resolution' in model or 'meta' in model
+    tex_size = model.get('texture_size')
+    res = model.get('resolution', {})
+    tw = tex_size[0] if tex_size else res.get('width', 16)
+    # UV 缩放: 若 UV max>16 且非 16 纹理, 缩到 16 (MC 26.1 对大 UV 有 translucency bug)
+    uv_max = 0.0
+    for e in elements:
+        for f in e.get('faces', {}).values():
+            for v in f.get('uv') or []:
+                uv_max = max(uv_max, abs(v))
+    scale = (16.0 / tw) if (uv_max > 16.01 and tw and tw != 16) else None
+
+    cleaned = []
+    for e in elements:
+        frm = list(e.get('from', [0, 0, 0]))
+        to = list(e.get('to', [16, 16, 16]))
+        # 6. inflate 烘焙进坐标 (BB→MC): 逐轴 outward 膨胀/收缩。
+        #    必须 order-aware: 正常轴(from<=to) from-=i,to+=i; 反转轴(from>to) from+=i,to-=i。
+        #    统一用 from-=i,to+=i 会让反转 cube 的 inflate 方向搞反 → 本该内嵌的层膨胀到与外层重合
+        #    (高背椅毯子: 外层 cushion2 inflate+0.2 + 内层 cushion1 反转 inflate-0.2 本应嵌套)。
+        inflate = e.get('inflate', 0) or 0
+        if abs(inflate) > 1e-9:
+            for k in range(3):
+                if frm[k] <= to[k]:
+                    frm[k] -= inflate
+                    to[k] += inflate
+                else:
+                    frm[k] += inflate
+                    to[k] -= inflate
+        ne = {'from': frm, 'to': to}
+        # 1. rotation 数组 [rx,ry,rz] → {angle,axis,origin}
+        rot = e.get('rotation')
+        if rot:
+            if isinstance(rot, dict):
+                # 已是 dict (BB 部分导出), 只保证字段齐全
+                ne['rotation'] = {
+                    'angle': rot.get('angle', 0),
+                    'axis': rot.get('axis', 'y'),
+                    'origin': list(rot.get('origin', [8, 8, 8])),
+                }
+            elif isinstance(rot, list) and len(rot) == 3:
+                # BB EulerXYZ 数组: [rx,ry,rz], 非零分量决定轴, 值即角度
+                axes = 'xyz'
+                for idx, val in enumerate(rot):
+                    if abs(val) > 0.01:
+                        ne['rotation'] = {
+                            'angle': float(val),
+                            'axis': axes[idx],
+                            'origin': list(e.get('origin', [8, 8, 8])),
+                        }
+                        break
+                else:
+                    # 全零旋转 → 等价无旋转
+                    pass
+            # 2. 旋转后 UV 不缩放? 保持原样
+        # 3. faces: 丢弃无纹理面, texture 整数→"#N", UV 缩放
+        faces = {}
+        for side, f in e.get('faces', {}).items():
+            t = f.get('texture')
+            valid = (t is not None) and (t != '') and (t != '#missing') and (t is not False)
+            if not valid:
+                continue  # 丢弃空纹理面 (MC 必填, 空壳应删)
+            nf = {'texture': '#' + str(t)}
+            if f.get('uv'):
+                uv = f['uv']
+                if scale:
+                    uv = [round(v * scale, 4) for v in uv]
+                nf['uv'] = uv
+            if f.get('rotation') is not None:
+                nf['rotation'] = f['rotation']
+            faces[side] = nf
+        ne['faces'] = faces
+        cleansed = ne if faces else ne
+        cleaned.append(ne)
+    return cleaned, scale
 
 
 def apply_fixes(model, path, issues):
@@ -353,6 +495,29 @@ def main():
         sys.exit(2)
 
     model = load_model(args.model)
+    is_bbmodel = args.model.lower().endswith('.bbmodel')
+
+    # 直接处理 .bbmodel: 标准化成 MC 可加载模型, 输出到同目录 <base>.json
+    if is_bbmodel:
+        cleaned, scale = normalize_bbmodel_to_mc(model)
+        base = os.path.splitext(os.path.basename(args.model))[0]
+        out_path = os.path.join(os.path.dirname(args.model) or '.', base + '.json')
+        out_model = {
+            'textures': model.get('textures') or {},
+            'elements': cleaned,
+            'parent': 'minecraft:block/block',
+        }
+        with open(out_path, 'w', encoding='utf-8') as f:
+            json.dump(out_model, f, indent=2, ensure_ascii=False)
+        print(f"✅ {base}.bbmodel → 标准化输出 {out_path}")
+        print(f"   elements={len(cleaned)}, UV scale={'×%.4f' % scale if scale else '不变'}")
+        # 标准化的模型再跑一遍检测 (对生成的 .json)
+        out_issues = detect_issues(out_model, out_path)
+        for sev, code, msg, fix in out_issues:
+            icon = '❌' if sev == 'ERROR' else '⚠️'
+            print(f"   {icon} [{code}] {msg}")
+        sys.exit(0)
+
     issues = detect_issues(model, args.model)
 
     # 多变体碰撞箱检测 (本次实际踩坑: 6 变体全用最大碰撞箱)

@@ -1,0 +1,20 @@
+{
+  "resolution": 8,
+  "profiles": [
+    {
+      "id": "spruce_planter",
+      "mode": "layers",
+      "models": ["../../../../../../../build/requested_models/spruce_planter/spruce_planter_placed_world.json"],
+      "java": "src/main/java/com/pastoralhome/block/SprucePlanterBlock.java",
+      "include_indices": [0, 17, 18],
+      "max_air_percent": 18.0,
+      "max_miss_percent": 1.0,
+      "max_shape_boxes": {"LOWER_COLLISION": 3, "MIDDLE_COLLISION": 1, "UPPER_COLLISION": 1},
+      "layers": [
+        {"model_y": [0, 16], "offset_y": 0, "shape": "LOWER_COLLISION"},
+        {"model_y": [16, 32], "offset_y": 16, "shape": "MIDDLE_COLLISION"},
+        {"model_y": [32, 48], "offset_y": 32, "shape": "UPPER_COLLISION"}
+      ]
+    }
+  ]
+}

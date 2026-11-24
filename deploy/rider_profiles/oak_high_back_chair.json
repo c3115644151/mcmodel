@@ -1,0 +1,8 @@
+{
+  "name": "oak_high_back_chair",
+  "type": "seat",
+  "model": "src/main/resources/assets/pastoral_home/models/block/oak_high_back_chair.json",
+  "seat_height_blocks": 0.625,
+  "behind_offset_blocks": 0,
+  "passenger_offset_px": [0, 0.16, 0]
+}

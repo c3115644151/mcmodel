@@ -1,0 +1,9 @@
+{
+  "name": "telescope",
+  "type": "seat",
+  "model": "src/main/resources/assets/pastoral_home/models/block/telescope.json",
+  "seat_height_blocks": 0.0,
+  "behind_offset_blocks": 0.98,
+  "camera_forward_offset_blocks": 0.43,
+  "passenger_offset_px": [0, 0.16, 0]
+}

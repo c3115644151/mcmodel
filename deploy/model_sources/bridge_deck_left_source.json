@@ -1,0 +1,95 @@
+{
+  "textures": {
+    "bb_texture_0": "pastoral_home:block/bridge_deck",
+    "particle": "minecraft:block/oak_planks"
+  },
+  "elements": [
+    {
+      "from": [
+        -9.0,
+        -3.0,
+        8.0
+      ],
+      "to": [
+        -2.0,
+        0.0,
+        16.0
+      ],
+      "rotation": {
+        "angle": 0,
+        "axis": "y",
+        "origin": [
+          -4.0,
+          0.0,
+          32.0
+        ]
+      },
+      "faces": {
+        "north": {
+          "uv": [
+            10.5,
+            10.5,
+            12.25,
+            11.25
+          ],
+          "texture": "#bb_texture_0"
+        },
+        "east": {
+          "uv": [
+            2.25,
+            9,
+            4.25,
+            9.75
+          ],
+          "texture": "#bb_texture_0"
+        },
+        "south": {
+          "uv": [
+            10.75,
+            0,
+            12.5,
+            0.75
+          ],
+          "texture": "#bb_texture_0"
+        },
+        "west": {
+          "uv": [
+            4.5,
+            9,
+            6.5,
+            9.75
+          ],
+          "texture": "#bb_texture_0"
+        },
+        "up": {
+          "uv": [
+            1.75,
+            8.75,
+            0,
+            6.75
+          ],
+          "texture": "#bb_texture_0"
+        },
+        "down": {
+          "uv": [
+            3.75,
+            6.75,
+            2,
+            8.75
+          ],
+          "texture": "#bb_texture_0"
+        }
+      }
+    }
+  ],
+  "parent": "minecraft:block/block",
+  "display": {
+    "ground": {
+      "scale": [
+        0.25,
+        0.25,
+        0.25
+      ]
+    }
+  }
+}

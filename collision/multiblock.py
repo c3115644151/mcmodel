@@ -13,6 +13,7 @@ MC 一个方块的碰撞箱必须在该方块内(坐标 0-16)。
 格子原点: 最左格原点 = 模型轴最小值; 后续格原点 = 上一个切割点。
 """
 import argparse
+import math
 from parse_model import load_cubes, cube_aabb, all_bounds
 from generate import VoxelGrid, compress_voxels, to_java, format_boxlist
 
@@ -30,30 +31,15 @@ def auto_detect_grid(cubes):
     }
     grid = {}
     for axis, (lo, hi) in axes_bounds.items():
-        span = hi - lo
-        n = round(span / 16)  # 格子数
-        if n <= 1:
-            continue  # 单格
-        center = (lo + hi) / 2
-        # 中心对齐到最近的 8 倍数 (格中心坐标序列: ...-24,-8,8,24...)
-        # 但偶数格时中心在边界(0, 16...), 需单独处理
-        # 先求格中心序列: n 个格中心, 以离 center 最近的合法格中心对齐
-        # 合法格中心 = 8 + 16k (格中心坐标是 ...-8, 8, 24... 即 8 的奇数倍)
-        # 格中心序列:
-        if n % 2 == 1:
-            # 奇数格: 中间格中心 = center 对齐到最近的 (8 + 16k)
-            mid_center = 8 + 16 * round((center - 8) / 16)
-            centers = [mid_center + (i - n // 2) * 16 for i in range(n)]
-        else:
-            # 偶数格: 格子边界落在 center 附近(整数格), 格中心在边界两侧
-            # center 应对齐到最近的 16 倍数(边界), 格中心在其两侧
-            edge = 16 * round(center / 16)  # 最近的边界
-            centers = [edge + 8 + (i - n // 2) * 16 for i in range(n)]
-        # 格子边界 = 相邻格中心的中点
-        cuts = []
-        for i in range(len(centers) - 1):
-            cuts.append((centers[i] + centers[i + 1]) / 2)
-        grid[axis] = cuts
+        # Use the occupied Minecraft cells rather than rounding the visual span.
+        # A model from -10 to 26 touches three cells (-16..0, 0..16, 16..32),
+        # even though its span is only 36 model units.
+        import math
+        first_cell = math.floor(lo / 16.0)
+        last_cell = math.floor((hi - 1.0e-6) / 16.0)
+        if last_cell <= first_cell:
+            continue
+        grid[axis] = [16.0 * cell for cell in range(first_cell + 1, last_cell + 1)]
     return grid
 
 
@@ -156,6 +142,63 @@ def to_local(box, origins, grid):
         clamp16(x0 - ox), clamp16(y0 - oy), clamp16(z0 - oz),
         clamp16(x1 - ox), clamp16(y1 - oy), clamp16(z1 - oz),
     )
+
+
+def measure_cell_coverage(cubes, cells, grid, resolution=8):
+    """Measure collision air/misses independently inside each model grid cell.
+
+    Whole-structure air ratios are misleading for sparse furniture because they
+    count every empty space between legs, boards and roofs. This metric clips
+    both rendered occupancy and collision boxes to each cell before comparing.
+    Rotated elements use the same inverse-rotation voxel rasterizer as the main
+    collision audit.
+    """
+    from generate import VoxelGrid
+    from optimize import build_collision_reference_grid, metric_resolution
+    from parse_model import all_bounds
+
+    if not cubes:
+        return {}
+    bounds = all_bounds(cubes)
+    cell_res = metric_resolution(cubes, resolution)
+    model_grid, voxel_origin, dims = build_collision_reference_grid(cubes, cell_res)
+    min_cell = tuple(math.floor(bounds[axis] / 16.0) for axis in range(3))
+    split_axes = {"xyz".index(axis) for axis, cuts in grid.items() if cuts}
+    measurements = {}
+    for key, boxes in cells.items():
+        cell_origin = tuple((min_cell[axis] + key[axis]) * 16.0 if axis in split_axes else 0.0
+                            for axis in range(3))
+        starts = [max(0, math.floor(cell_origin[axis] * cell_res) - voxel_origin[axis])
+                  for axis in range(3)]
+        ends = [min(dims[axis], math.ceil((cell_origin[axis] + 16.0) * cell_res) - voxel_origin[axis])
+                for axis in range(3)]
+        rendered = collided = overlap = false_positive = false_negative = 0
+        for ix in range(starts[0], ends[0]):
+            lx = (ix + voxel_origin[0] + 0.5) / cell_res - cell_origin[0]
+            for iy in range(starts[1], ends[1]):
+                ly = (iy + voxel_origin[1] + 0.5) / cell_res - cell_origin[1]
+                for iz in range(starts[2], ends[2]):
+                    lz = (iz + voxel_origin[2] + 0.5) / cell_res - cell_origin[2]
+                    in_model = bool(model_grid[ix][iy][iz])
+                    in_shape = any(box[0] <= lx < box[3] and box[1] <= ly < box[4]
+                                   and box[2] <= lz < box[5] for box in boxes)
+                    rendered += in_model
+                    collided += in_shape
+                    overlap += in_model and in_shape
+                    false_positive += in_shape and not in_model
+                    false_negative += in_model and not in_shape
+        pct = lambda count, total: (100.0 * count / total) if total else 0.0
+        measurements[key] = {
+            "air_percent": pct(false_positive, rendered),
+            "miss_percent": pct(false_negative, rendered),
+            "precision_percent": pct(overlap, collided),
+            "render_voxels": rendered,
+            "collision_voxels": collided,
+            "air_voxels": false_positive,
+            "miss_voxels": false_negative,
+            "resolution": cell_res,
+        }
+    return measurements
 
 
 def _origin_for(coord, origins, cuts):

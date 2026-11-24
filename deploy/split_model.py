@@ -54,6 +54,24 @@ def split_by_indices(model, keep=None, drop=None):
     return new_model
 
 
+def shift_x(model, amount):
+    """将拆分出的跨方块模型平移到新的方块原点。"""
+    return shift_model(model, amount, 0, 0)
+
+
+def shift_model(model, dx=0, dy=0, dz=0):
+    """Translate model geometry and rotation origins in all three axes."""
+    for element in model.get("elements", []):
+        for axis, amount in enumerate((dx, dy, dz)):
+            element["from"][axis] += amount
+            element["to"][axis] += amount
+        rotation = element.get("rotation")
+        if rotation and "origin" in rotation:
+            for axis, amount in enumerate((dx, dy, dz)):
+                rotation["origin"][axis] += amount
+    return model
+
+
 def center(elem):
     f, t = elem["from"], elem["to"]
     return [(f[i] + t[i]) / 2 for i in range(3)]
@@ -97,6 +115,12 @@ def main():
     ap.add_argument("--keep", help="保留的元素索引 (逗号分隔)")
     ap.add_argument("--drop", help="删除的元素索引 (逗号分隔)")
     ap.add_argument("--out", help="输出路径")
+    ap.add_argument("--shift-x", type=float, default=0,
+                    help="对拆分后的元素和旋转原点沿 X 轴平移")
+    ap.add_argument("--shift-y", type=float, default=0,
+                    help="对拆分后的元素和旋转原点沿 Y 轴平移")
+    ap.add_argument("--shift-z", type=float, default=0,
+                    help="对拆分后的元素和旋转原点沿 Z 轴平移")
     ap.add_argument("--auto-wheel", action="store_true", help="自动检测轮子")
     ap.add_argument("--wheel-hint", help="轮子元素索引 (逗号分隔), 精确指定")
     ap.add_argument("--out-prefix", help="自动模式的输出前缀")
@@ -134,6 +158,8 @@ def main():
             print("需要 --out (或 --auto-wheel)")
             sys.exit(1)
         split_model = split_by_indices(model, keep=keep, drop=drop)
+        if args.shift_x or args.shift_y or args.shift_z:
+            split_model = shift_model(split_model, args.shift_x, args.shift_y, args.shift_z)
         save_model(split_model, args.out)
 
 

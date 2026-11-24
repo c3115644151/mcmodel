@@ -245,6 +245,17 @@ def face_shape_rows(cube, face, img, W, H, uv_w=16, uv_h=16, steps=8):
     hw = ay_h[1] - ay_h[0]
     if hw <= 0:
         return {'rows': [], 'empty': True}
+    if img is None or W <= 0 or H <= 0:
+        # JSON exports may reference a namespaced texture that has not yet been
+        # copied into the project resource tree. Without pixels, conservatively
+        # treat the model face as opaque instead of crashing or inventing a hole.
+        return {
+            'rows': [
+                (ay_h[0] + hw * i / steps, ay_h[0] + hw * (i + 1) / steps, au[0], au[1])
+                for i in range(steps)
+            ],
+            'empty': False,
+        }
     rows = []
     for i in range(steps):
         my0 = ay_h[0] + hw * i / steps

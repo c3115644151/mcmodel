@@ -1,0 +1,6 @@
+{
+  "name": "bed",
+  "type": "sleep",
+  "model": "src/main/resources/assets/pastoral_home/models/block/bed.json",
+  "sleep_spots_px": [[8, 15, 8], [24, 15, 8]]
+}

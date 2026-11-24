@@ -1,0 +1,8 @@
+{
+  "name": "sofa",
+  "type": "seat",
+  "model": "src/main/resources/assets/pastoral_home/models/block/sofa_single.json",
+  "seat_height_blocks": 0.5,
+  "behind_offset_blocks": 0,
+  "passenger_offset_px": [0, 0.16, 0]
+}
