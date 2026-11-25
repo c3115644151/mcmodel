@@ -13,7 +13,7 @@ python -m mcmodel gate --no-build   # 只跑门（资源已是最新时）
 python -m mcmodel run <name> -- <args>   # 跑单个命令
 ```
 
-在 `tools/` 目录下运行，或用项目 venv 的解释器（门需要 Pillow）。
+在 `tools/` 目录下运行，或用项目 venv 的解释器（门需要 Pillow；观测层的预览/截图工具还要 numpy）。
 
 **60 条命令**：source 5 / build 25 / gate 23 / observe 7。`list` 里的表是权威，本文只解释为什么这样分层。
 
@@ -34,6 +34,7 @@ python -m mcmodel doctor
 | 依赖 | 用在哪 | 缺了会怎样 |
 |---|---|---|
 | Python 3.10+ 与 Pillow | 全部生成器与门 | 什么都跑不了 |
+| numpy | `preview-*` / `source-view` 等观测工具 | 观测层不可用（生成与门照常） |
 | JDK 25 + 工程里的 Gradle wrapper | `gradle:` 开头的命令（`jar`、`process-resources`） | 只有这类命令失败 |
 | Node 22+ | 仅 observe 阶段（`mcpfabric/`） | 只能做静态侧，不能进游戏看 |
 
