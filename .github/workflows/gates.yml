@@ -1,9 +1,10 @@
 name: gates
 
 # The gates that need neither a Minecraft install nor a Gradle daemon:
-# the command table must keep describing the disk, and every authoring source
-# must survive the uv audit. Everything that needs the mod working tree runs
-# in the mod repository, where this tool is a submodule.
+# the command table must keep describing the disk, every authoring source must
+# survive the uv audit, and every import in this repository must resolve.
+# Everything that needs the mod working tree runs in the mod repository, where
+# this tool is a submodule.
 on:
   push:
     branches: [main]
@@ -26,10 +27,13 @@ jobs:
           python -m pip install pillow
 
       - name: Byte-compile every script
-        run: python -m compileall -q deploy mcmodel
+        run: python -m compileall -q deploy collision common mcmodel
 
       - name: Command table describes the disk
         run: python deploy/test_command_registry.py
+
+      - name: Every import resolves
+        run: python deploy/test_python_imports.py
 
       - name: Authoring sources pass the uv audit
         run: python deploy/audit_model_uv_sources.py
