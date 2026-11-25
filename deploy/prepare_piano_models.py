@@ -50,7 +50,7 @@ PALETTE = ASSETS / "textures/block/piano_palette.png"
 KEYS = ASSETS / "textures/block/piano_keys.png"
 ARTWORK = ASSETS / "textures/block/piano.png"
 PIANO_BLOCK = ROOT / "src/main/java/com/pastoralhome/block/PianoBlock.java"
-sys.path.insert(0, str(ROOT / "tools/deploy"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from prepare_instrument_models import (  # noqa: E402
     cell_bounds, clamp_depth, extents, import_model, save, shift, split_model,
 )

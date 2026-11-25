@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "tools/deploy/model_sources/entryway"
 STAGE = ROOT / "build/entryway_models"
 ASSETS = ROOT / "src/main/resources/assets/pastoral_home"
-sys.path.insert(0, str(ROOT / "tools/collision"))
-sys.path.insert(0, str(ROOT / "tools/deploy"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "collision"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from run import deploy_collision
 from generate import merge_exact_union_boxes
 from split_model_cells import split_model

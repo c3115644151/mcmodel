@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools/deploy"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import preview_rider_placement as preview
 
 

@@ -11,8 +11,8 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools/deploy"))
-sys.path.insert(0, str(ROOT / "tools/common"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
 from item_icon_preview import _project_view, render_projected_icon
 from item_icon_proxy import rotate_relative_to_vanilla_gui
 from gui_measure import corners

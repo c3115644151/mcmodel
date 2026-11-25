@@ -17,9 +17,9 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools/common"))
-sys.path.insert(0, str(ROOT / "tools/deploy"))
-sys.path.insert(0, str(ROOT / "tools/collision"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "collision"))
 
 from audit_java_shapes import read_shape
 from item_icon_preview import render_projected_icon, _project_view

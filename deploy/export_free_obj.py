@@ -24,7 +24,7 @@ SOURCE = ROOT / "tools/deploy/model_sources/instruments/record_player.bbmodel"
 MODEL_DIR = ASSETS / "models/block"
 TEXTURE = "pastoral_home:block/record_player"
 
-sys.path.insert(0, str(ROOT / "tools/deploy"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gui_measure import apply_rotation  # noqa: E402
 from item_icon_preview import FACE_VERTICES  # noqa: E402
 

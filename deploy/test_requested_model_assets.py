@@ -15,8 +15,8 @@ ROOT = Path(__file__).resolve().parents[2]
 ASSETS = ROOT / "src/main/resources/assets/pastoral_home"
 SOURCES = ROOT / "tools/deploy/model_sources"
 BUILD = ROOT / "build/requested_models"
-sys.path.insert(0, str(ROOT / "tools/deploy"))
-sys.path.insert(0, str(ROOT / "tools/common"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
 from item_icon_proxy import geometry_bounds, unwrap_generated_gui_select
 from item_icon_preview import visible_projected_measurements
 from normalize_item_icons import resolve_texture

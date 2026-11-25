@@ -15,7 +15,7 @@ python -m mcmodel run <name> -- <args>   # 跑单个命令
 
 在 `tools/` 目录下运行，或用项目 venv 的解释器（门需要 Pillow）。
 
-**59 条命令**：source 5 / build 25 / gate 22 / observe 7。`list` 里的表是权威，本文只解释为什么这样分层。
+**60 条命令**：source 5 / build 25 / gate 23 / observe 7。`list` 里的表是权威，本文只解释为什么这样分层。
 
 ## 安装
 
@@ -47,8 +47,8 @@ git submodule update --init --recursive
 ## 六十秒上手
 
 ```bash
-python -m mcmodel list                      # 59 条命令，四个阶段
-python -m mcmodel gate --no-build           # 22 个门全跑，不重跑生成器
+python -m mcmodel list                      # 60 条命令，四个阶段
+python -m mcmodel gate --no-build           # 23 个门全跑，不重跑生成器
 python -m mcmodel gate --no-build gate-particle   # 单跑一条门，秒级
 python -m mcmodel build prepare-piano       # 只重生成一个模型的资源
 python -m mcmodel shot --out build/x.png --scene scene.js --reload
@@ -98,9 +98,10 @@ python -m mcmodel gen-icons <model.json>
 | `gate-piano-keys` | 键宽/缝隙/黑键比例漂移 0.02 px 后，键盘图案被剪切 |
 | `gate-lang` | 新增方块漏了 zh_cn，游戏里显示 `block.mod.x` |
 | `gate-collision` | 碰撞表与模型脱钩（改了模型忘记重算 Shapes） |
+| `gate-imports` | `collision/`、`common/` 被"grep 到没人用"为由删除，而真正 import 它们的是 `from run import …` 这种经 `sys.path` 注入的写法 |
 
 ```
-python -m mcmodel gate                 # 全部：先跑 19 条批处理 build 命令，再跑 22 个门
+python -m mcmodel gate                 # 全部：先跑 19 条批处理 build 命令，再跑 23 个门
 python -m mcmodel gate gate-lang       # 单个：只跑它声明的 requires，不重建整个项目
 python -m mcmodel gate --no-build      # 全部门，跳过重建
 ```
@@ -144,9 +145,11 @@ tools/
   mcmodel/            ← 本工具：命令表 + 分发器（不重复实现逻辑）
     registry.py       命令表，一个命令一行，说明它属于哪一阶段
     cli.py            python -m mcmodel
-  deploy/             ← 具体实现脚本（97 个 .py + 3 个 .ps1），其中 59 个入口登记在命令表里
+  deploy/             ← 具体实现脚本（98 个 .py + 3 个 .ps1），其中 60 个入口登记在命令表里
     model_sources/    美术源 .bbmodel
     IMPLEMENTATION_CONTRACT.md   实装契约：一个模型完成前必须逐条判定的跨学科决策
+  collision/          ← 碰撞体层（10 个 .py）：把模型体素化、拟合、压缩成 VoxelShape
+  common/             ← 共用常量（1 个 .py）
   mcpfabric/          ← 与运行中的客户端通信（截图、方块、脚本）
   mcpmod/             ← 备用桥：只在需要 UI 输入（JEI overlay、自绘界面）时才用
 ```
@@ -191,9 +194,13 @@ tools/
 早期路线是"一键实装"（`deploy/cli.py` + `analyzer.py` + `codegen.py`：分析模型 → 生成 Block/Entity 骨架 → 输出清单）。
 它正确识别了"模型实装包含哪些学科"，但把产出定位成**代码**而不是**证据**，与现在的生成器+门路线冲突，已删除；
 需要时从 git 历史取回。它留下的最有价值的产物是 `IMPLEMENTATION_CONTRACT.md`，现在是实装前的必读清单。
-旧一代的 JS 工具与 `collision/`、`common/` 模块也随之一并移除，依据是当前 97 个脚本里没有任何一行
-import 它们。碰撞箱能力没有丢：它在 `deploy/piano_shapes.py` 这类"生成器 + `gate-collision`"的形式里
-继续工作。旧实现留在仓库的 `legacy` 分支。
+旧一代的 JS 工具已删除，旧实现留在仓库的 `legacy` 分支。
+
+`collision/` 与 `common/` 一度也被这样删掉，理由是"97 个脚本里没有任何一行 import 它们"。
+那个理由是错的，代价是构建链断了半个月才被发现：脚本先把目录塞进 `sys.path`，再写
+`from run import deploy_collision`——模块名是**文件**，不是目录，所以按目录名 grep 永远搜不到。
+现在 `gate-imports` 读 AST 而不是 grep：它按解释器的解析顺序还原每条 import，任何指向空气的
+import 都会让门变红。教训留在这里，因为下次"确认没人用"还会有人想到 grep。
 
 ## 许可
 

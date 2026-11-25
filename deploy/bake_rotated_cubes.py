@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools/deploy"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gui_measure import apply_rotation  # noqa: E402
 
 FACE_UV_AXES = {

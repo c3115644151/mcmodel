@@ -22,7 +22,7 @@ ASSETS = ROOT / "src/main/resources/assets/pastoral_home"
 SOURCE_DIR = ROOT / "tools/deploy/model_sources/instruments"
 BUILD_DIR = ROOT / "build/instrument_models"
 IMPORTER = ROOT / "tools/deploy/import_java_block_bbmodel.py"
-sys.path.insert(0, str(ROOT / "tools/deploy"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from item_icon_proxy import geometry_bounds  # noqa: E402
 from split_model_cells import split_model  # noqa: E402
 

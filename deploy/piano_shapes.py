@@ -29,7 +29,7 @@ CLIP = {0: (0.0, 16.0), 1: (0.0, 16.0), 2: (0.0, 16.0)}
 
 
 def _deploy_collision():
-    sys.path.insert(0, str(ROOT / "tools/collision"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "collision"))
     from run import deploy_collision
 
     return deploy_collision

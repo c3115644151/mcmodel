@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assert the shipped piano keyboard against the numbers a real keyboard obeys.
+r"""Assert the shipped piano keyboard against the numbers a real keyboard obeys.
 
 The report reads the shipped assets (the palette sheet, the key sheet and the six cell
 models), never the generator's memory, so a stale or hand-edited model fails here instead
@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools/deploy"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from prepare_piano_models import (  # noqa: E402
     ART_LIP_ROWS,
