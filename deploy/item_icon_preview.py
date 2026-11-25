@@ -6,13 +6,14 @@ the visible pixel envelope so transparent texture padding does not dominate icon
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Callable
 
 from PIL import Image, ImageChops, ImageDraw
 
 from gui_measure import apply_rotation, project_iso
-from item_icon_proxy import rotate_relative_to_vanilla_gui
+from item_icon_proxy import rotate_for_display, rotate_relative_to_vanilla_gui
 
 
 FACE_VERTICES = {
@@ -25,6 +26,40 @@ FACE_VERTICES = {
     "west": ((0, 1, 0), (0, 0, 0), (0, 0, 1), (0, 1, 1)),
     "east": ((1, 1, 1), (1, 0, 1), (1, 0, 0), (1, 1, 0)),
 }
+
+
+def load_sprite(path: Path, frame: int = 0) -> Image.Image | None:
+    """Load a texture as one sprite frame.
+
+    An animated sprite ships as a vertical strip (the 彩灯 shell is 32x128 with four
+    32x32 frames) whose height is the frame count times the frame height. Face UVs are
+    measured against the frame, so sampling the whole strip stretched every face
+    window four times too tall and the icon read as horizontal amber bands instead
+    of a lamp. The frame height comes from the sprite's .mcmeta, falling back to the
+    sprite width, which is the frame shape for every strip this project ships.
+    """
+    path = Path(path)
+    if not path.is_file():
+        return None
+    try:
+        sprite = Image.open(path).convert("RGBA")
+    except Exception:
+        return None
+    meta_path = path.with_name(path.name + ".mcmeta")
+    height = sprite.height
+    if meta_path.is_file():
+        try:
+            animation = json.loads(meta_path.read_text(encoding="utf-8")).get("animation", {})
+        except (OSError, json.JSONDecodeError):
+            animation = {}
+        declared = animation.get("height") or sprite.width
+        if isinstance(declared, int) and 0 < declared < sprite.height:
+            height = declared
+    if height >= sprite.height:
+        return sprite
+    frames = sprite.height // height
+    chosen = max(0, min(frame, frames - 1))
+    return sprite.crop((0, chosen * height, sprite.width, (chosen + 1) * height))
 
 
 def resolve_texture_reference(model: dict, reference: str) -> str | None:
@@ -129,7 +164,7 @@ def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | 
         for face_name, face in element.get("faces", {}).items():
             if face_name not in FACE_VERTICES or not isinstance(face, dict):
                 continue
-            points = [rotate_relative_to_vanilla_gui(point, gui_rotation)
+            points = [rotate_for_display(point, gui_rotation)
                       for point in _element_points(element, face_name)]
             scaled_points = [tuple(8.0 + (point[i] - 8.0) * gui_scale[i] for i in range(3)) for point in points]
             projections_and_depths = [_project_view(point, view, camera_distance) for point in scaled_points]
@@ -139,12 +174,7 @@ def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | 
             uv = face.get("uv")
             texture_ref = resolve_texture_reference(model, str(face.get("texture", "")))
             texture_path = texture_resolver(texture_ref) if texture_ref else None
-            texture = None
-            if texture_path and texture_path.is_file():
-                try:
-                    texture = Image.open(texture_path).convert("RGBA")
-                except Exception:
-                    texture = None
+            texture = load_sprite(texture_path) if texture_path else None
             uv_points = None
             if uv and texture:
                 rotation = (int(face.get("rotation", 0)) // 90) % 4
@@ -309,7 +339,7 @@ def visible_projected_measurements(model: dict, texture_resolver: Callable[[str]
             if face_name not in FACE_VERTICES or not isinstance(face, dict):
                 continue
             gui_rotation = model.get("display", {}).get("gui", {}).get("rotation", (30.0, 225.0, 0.0))
-            points = [rotate_relative_to_vanilla_gui(point, gui_rotation)
+            points = [rotate_for_display(point, gui_rotation)
                       for point in _element_points(element, face_name)]
             projected = [project_iso((point[0] - 8.0, point[1] - 8.0, point[2] - 8.0))
                           for point in points]
@@ -317,12 +347,7 @@ def visible_projected_measurements(model: dict, texture_resolver: Callable[[str]
             uv = face.get("uv")
             texture_ref = resolve_texture_reference(model, str(face.get("texture", "")))
             texture_path = texture_resolver(texture_ref) if texture_ref else None
-            texture = None
-            if texture_path and texture_path.is_file():
-                try:
-                    texture = Image.open(texture_path).convert("RGBA")
-                except Exception:
-                    texture = None
+            texture = load_sprite(texture_path) if texture_path else None
             uv_points = None
             if uv and texture:
                 rotation = (int(face.get("rotation", 0)) // 90) % 4

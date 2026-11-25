@@ -35,6 +35,22 @@ def rotate_relative_to_vanilla_gui(point, rotation):
     return apply_rotation(point, [0.0, yaw_delta, 0.0], [8.0, 8.0, 8.0])
 
 
+def rotate_for_display(point, rotation):
+    """Full display rotation, pitch included: the offline views must not bake 30 degrees in."""
+    """Rotate a point by the difference between an authored display transform and
+    the vanilla GUI camera the shared projection is built around (pitch 30, yaw 225).
+
+    Yaw alone was not enough: a painter that only applies the yaw difference keeps
+    the vanilla camera elevation, so an authored level camera (pitch 0) still drew
+    the model's top faces at 30 degrees and a low camera hid nothing. Every preview
+    of a firstperson/thirdperson/gui transform has to move the elevation too.
+    """
+    rotation = rotation or VANILLA_BLOCK_GUI["rotation"]
+    pitch_delta = float(rotation[0]) - float(VANILLA_BLOCK_GUI["rotation"][0])
+    yaw_delta = float(rotation[1]) - float(VANILLA_BLOCK_GUI["rotation"][1])
+    return apply_rotation(point, [pitch_delta, yaw_delta, 0.0], [8.0, 8.0, 8.0])
+
+
 def geometry_bounds(model: dict[str, Any]) -> tuple[float, float, float, float, float, float] | None:
     points = corners(model)
     if not points:

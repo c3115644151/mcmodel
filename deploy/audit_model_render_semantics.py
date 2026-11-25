@@ -4,9 +4,16 @@
 Every rule here is a failure that actually shipped and had to be diagnosed from screenshots:
 
 1. A core hidden behind an opaque shell. The party-lights model has a 3x3x3 lit core inside a
-   4x4x4 paper shell. Blockbench shows the core because its viewport culls the near faces; a
-   Minecraft block model does not cull by winding, so the same geometry renders as a solid orange
-   cube. The fix is not art: shrink the shell texture's alpha and draw the core first.
+   4x4x4 paper shell. Two things can open that hull, and the audit has to accept both:
+   * the artist's negative size. A shell whose from is greater than its to on one axis puts two of
+     its quads on the far planes facing away, and FaceBakery only re-winds a quad when
+     elementRotation is null - the rotation object Blockbench writes on every element keeps the
+     repair off, so backface culling drops those two quads and the core shows through. Inside-out
+     shells are therefore a note, not a fault.
+   * alpha. Without either trick the same geometry renders as a solid orange cube, and the fix is
+     then art: shrink the shell texture's alpha and draw the core first.
+
+   A plain ascending box with six opaque faces and no rotation really does bury what it holds.
 2. Draw order. Inside one block model all quads share a render type, so a translucent shell and an
    opaque core are submitted in the order the elements are listed. Shell first buries the core and
    the lamp reads as a cream brick (build/shots/pl_v8.png).
@@ -91,6 +98,21 @@ def contains(outer, inner) -> bool:
            all(inner[i + 3] <= outer[i + 3] + EPSILON for i in range(3))
 
 
+def inside_out(element: dict) -> bool:
+    """True when the element is authored with a negative size and keeps a rotation object.
+
+    That pair is what stops Minecraft's winding repair, so the reversed axis leaves two quads
+    back-facing and culled - the hull is open on those two sides."""
+    if "rotation" not in element:
+        return False
+    try:
+        low = [float(v) for v in element["from"]]
+        high = [float(v) for v in element["to"]]
+    except (KeyError, TypeError, ValueError):
+        return False
+    return any(low[i] > high[i] + EPSILON for i in range(3))
+
+
 def volume(box) -> float:
     return max(0.0, box[3] - box[0]) * max(0.0, box[4] - box[1]) * max(0.0, box[5] - box[2])
 
@@ -150,6 +172,11 @@ def audit(path: Path, assets: Path = ASSETS, notes: list[str] | None = None) -> 
             # A hull with a missing face is open on that side; the piano casing boxes its key bed and
             # still shows the keys because its front face was never drawn. Only a full six-face box
             # in opaque material actually buries what it contains.
+            if inside_out(outer):
+                notes.append(f"{name}: element {index} is inside element {outer_index}, which is "
+                             f"authored inside out (negative size plus rotation), so its reversed-axis "
+                             f"quads are culled and the inner element shows through")
+                continue
             if len(outer.get("faces") or {}) < 6:
                 notes.append(f"{name}: element {index} is inside element {outer_index}, which has only "
                              f"{len(outer.get('faces') or {})} faces, so it is open and can still show it")

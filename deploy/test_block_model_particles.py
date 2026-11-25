@@ -31,4 +31,49 @@ for name in ("hanging_rope_segment.json", "hanging_rope_end.json",
     assert particle.endswith("_particle"), f"{name} should use a dedicated particle tile, got {particle}"
     image = ROOT / "src/main/resources/assets/pastoral_home/textures/block" / f"{particle.rsplit('/', 1)[-1]}.png"
     assert image.is_file() and Image.open(image).size == (16, 16), f"{name} particle tile must be a 16x16 image"
+
+TEXTURES = ROOT / "src/main/resources/assets/pastoral_home/textures/block"
+
+
+def frame_of(texture: Path) -> Image.Image:
+    """One frame of an animated sheet: Minecraft stacks square frames, so the frame is the sheet's width."""
+    image = Image.open(texture).convert("RGBA")
+    meta = Path(str(texture) + ".mcmeta")
+    if meta.is_file():
+        height = json.loads(meta.read_text(encoding="utf-8")).get("animation", {}).get("height") or image.width
+        return image.crop((0, 0, image.width, height))
+    return image
+
+
+def natural_window(tile: Image.Image, frame: Image.Image) -> bool:
+    """Is the tile the frame's own texels at 1:1, rather than a resampled window?
+
+    The tile may not be a scaled-up crop: resampling a four-texel paint block produces a staircase, which
+    is what the party light rained when it broke. A flat tile is allowed; a patterned one has to exist
+    somewhere in the frame with no resampling at all.
+    """
+    if len({pixel[:3] for pixel in tile.getdata()}) == 1:
+        return True
+    if frame.width < tile.width or frame.height < tile.height:
+        return False
+    want = tile.tobytes()
+    for y in range(frame.height - tile.height + 1):
+        for x in range(frame.width - tile.width + 1):
+            if frame.crop((x, y, x + tile.width, y + tile.height)).tobytes() == want:
+                return True
+    return False
+
+
+for name in ("party_lights_lit.json", "party_lights_unlit.json", "hanging_rope_segment.json"):
+    data = json.loads((MODEL_ROOT / name).read_text(encoding="utf-8"))
+    textures = data["textures"]
+    tile_name = textures["particle"].rsplit("/", 1)[-1]
+    tile = (TEXTURES / (tile_name + ".png"))
+    assert tile.is_file() and Image.open(tile).size == (16, 16), f"{name} particle tile must be a 16x16 image"
+    sources = [value for key, value in textures.items() if key != "particle"]
+    assert sources, f"{name} has no source texture to shape debris from"
+    assert natural_window(Image.open(tile).convert("RGBA"),
+                          frame_of(TEXTURES / (sources[0].rsplit("/", 1)[-1] + ".png"))), (
+        f"{name} particle tile is a resampled window, not paint at the sheet's own texel scale")
+
 print(f"Block particles verified: {len(models)} models; atlas-backed models use dedicated 16x16 face tiles.")

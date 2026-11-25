@@ -37,22 +37,23 @@ class Command:
     # that order through task dependencies; outside Gradle it has to be declared here or the gate
     # fails on a missing intermediate file instead of on the thing it checks.
     requires: tuple[str, ...] = ()
+    # Always placed before whatever the person typed. A multi-verb script (model.py) needs its verb
+    # first, and prepending it here keeps the command table a table of capabilities rather than a
+    # list of shims.
+    verb: tuple[str, ...] = ()
     notes: str = ""
 
 
 COMMANDS: tuple[Command, ...] = (
     # ---------------------------------------------------------------- source
-    Command("inspect", "source", "inspect_bbmodel.py",
-            "Dump cubes, faces, uv, resolution and textures from a .bbmodel."),
     Command("uv-audit", "source", "audit_model_uv_sources.py",
             "Check every source declares a resolution its uv scaling can be derived from.", ci=True),
-    Command("uv-map", "source", "party_lights_uvmap.py",
-            "Draw each texture frame with its uv window overlaid; read before trusting a face."),
-    Command("source-view", "source", "preview_brewing_sources.ps1",
-            "Capture the native Blockbench viewport of a source model (works with the editor already open).",
-            args=("-SourcePaths '<paths>' -ReuseRunning",)),
-    Command("decode-sheets", "source", "party_lights_source.py",
-            "Write decoded texture sheets plus a structure report for a frame-animated source."),
+    Command("source-view", "source", "model.py",
+            "Capture Blockbench's own viewport of a source: the only reference image that counts.",
+            verb=("viewport",), args=("--source <bbmodel>", "[--reuse]"), batch=False),
+    Command("export-source", "source", "model.py",
+            "Blockbench's own java_block export, optionally diffed against the shipped model.",
+            verb=("export",), args=("--source <bbmodel>", "[--model <name>]"), batch=False),
 
     # ----------------------------------------------------------------- build
     # Order matters twice over. Every generator owns its source asset and rewrites src models, so
@@ -211,16 +212,24 @@ COMMANDS: tuple[Command, ...] = (
             notes="Unit test of the importer: writes to a temporary directory and needs no generated file."),
 
     # --------------------------------------------------------------- observe
-    Command("shot", "observe", "live_capture.py",
-            "The only safe way to screenshot: wait for a live world, reload, settle, reject overlay frames.",
-            needs_game=True, args=("--out <png>",)),
-    Command("sweep", "observe", "param_sweep.py",
-            "Sweep one generator constant and build a labelled comparison sheet with a source baseline.",
-            needs_game=True, args=("--file <generator>", "--param <NAME>", "--values a,b,c")),
-    Command("compare", "observe", "source_view_compare.py",
-            "Put the source viewport and the live shot side by side with both colour distributions."),
-    Command("preview-model", "observe", "preview_block_model.py",
-            "Offline render for geometry only: no mip, no back-face culling, not a visual verdict."),
+    Command("ship", "observe", "model.py",
+            "One piece end to end: generate --mirror, source-difference gate, reload, shoot, census.",
+            verb=("ship",), needs_game=True, args=("<piece>",), batch=False),
+    Command("shot", "observe", "model.py",
+            "The only safe way to sample the game: stage the scene, shoot, crop, colour census.",
+            verb=("live",), needs_game=True, args=("--piece <name>", "[--job <json>]", "[--reload]"),
+            batch=False),
+    Command("sweep", "observe", "model.py",
+            "One generator constant, several values, one camera, one labelled comparison sheet.",
+            verb=("sweep",), needs_game=True, args=("--piece <name>", "--param <NAME>", "--values a,b,c"),
+            batch=False),
+    Command("compare", "observe", "model.py",
+            "Source vs shipped: viewport/live side by side, or per-face uv and coordinate diff.",
+            verb=("compare",), args=("--piece <name>", "[--viewport <png> --live <png>]"), batch=False),
+    Command("preview-model", "observe", "model.py",
+            "Offline render for geometry only: no mip, no back-face culling, not a visual verdict.",
+            verb=("preview",), args=("<models>", "[--raw <bbmodel>]", "[--views front,quarter]"),
+            batch=False),
     Command("preview-icons", "observe", "preview_item_icons.py",
             "Render GUI icons and their measured silhouettes."),
     Command("preview-collision", "observe", "preview_collision_profiles.py",

@@ -15,7 +15,7 @@ python -m mcmodel run <name> -- <args>   # 跑单个命令
 
 在 `tools/` 目录下运行，或用项目 venv 的解释器（门需要 Pillow；观测层的预览/截图工具还要 numpy）。
 
-**60 条命令**：source 5 / build 25 / gate 23 / observe 7。`list` 里的表是权威，本文只解释为什么这样分层。
+**59 条命令**：source 3 / build 25 / gate 23 / observe 8。`list` 里的表是权威，本文只解释为什么这样分层。
 
 ## 安装
 
@@ -117,14 +117,17 @@ python -m mcmodel gate --no-build      # 全部门，跳过重建
 加载遮罩；机位不对时画面里根本没有主体。
 
 ```
-python -m mcmodel shot --out build/shots/x.png --scene build/scene.js --reload
-python -m mcmodel sweep --file <generator.py> --param SHELL_ALPHA --values 100,140,180 \
-    --generator '<generator.py>|--mirror' --scene build/scene.js --crop x0,y0,x1,y1 --out sheet.png
-python -m mcmodel compare --source build/blockbench_source_previews/x.png --live build/shots/y.png \
-    --crop x0,y0,x1,y1 --out cmp.png
+python -m mcmodel source-view --source tools/deploy/model_sources/<piece>/<name>.bbmodel [--reuse]
+python -m mcmodel shot --piece party_lights --reload
+python -m mcmodel sweep --piece party_lights --param SHELL_ALPHA --values 100,140,180
+python -m mcmodel compare --piece party_lights --viewport build/blockbench_source_previews/x.png \
+    --live build/shots/y_c.png
+python -m mcmodel ship party_lights        # 生成 → 门 → 重载 → 截图 → 普查
 ```
 
-`shot` 会等 unpaused 世界、可选重载、等渲染线程完成、量测帧的色分布，判定为遮罩就重拍并最终拒绝交付。
+这一层的六个命令都分发到同一个脚本 `deploy/model.py`（表里 `verb=` 就是它的子命令），所以每 piece 的参数只在
+`model.py` 的 `PIECES` 注册表写一次：源模型、生成器、门、作业文件、裁切框。`shot` 会等 unpaused 世界、可选重载、
+按作业文件摆场、拍完裁切并给出色分布，判定为遮罩就重拍并最终拒绝交付。
 `sweep` 每档都重建+摆场+重载+截图，结束后恢复源文件——不会把树留在最后一个试过的值上。
 `compare` 是交付前的必做一步：源视口与实机并排，附两边各自的色分布。
 
@@ -146,7 +149,7 @@ tools/
   mcmodel/            ← 本工具：命令表 + 分发器（不重复实现逻辑）
     registry.py       命令表，一个命令一行，说明它属于哪一阶段
     cli.py            python -m mcmodel
-  deploy/             ← 具体实现脚本（98 个 .py + 3 个 .ps1），其中 60 个入口登记在命令表里
+  deploy/             ← 具体实现脚本（89 个 .py + 2 个 .ps1），其中 59 个入口登记在命令表里；观测/单件驱动是 model.py
     model_sources/    美术源 .bbmodel
     IMPLEMENTATION_CONTRACT.md   实装契约：一个模型完成前必须逐条判定的跨学科决策
   collision/          ← 碰撞体层（10 个 .py）：把模型体素化、拟合、压缩成 VoxelShape

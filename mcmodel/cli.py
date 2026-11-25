@@ -25,7 +25,8 @@ def interpreter() -> str:
     return sys.executable
 
 
-def run_script(script: str, extra: list[str]) -> int:
+def run_script(script: str, extra: list[str], verb: tuple[str, ...] = ()) -> int:
+    extra = list(verb) + list(extra)
     if script.startswith("gradle:"):
         # A couple of commands are Gradle tasks, not scripts: the artefact they produce (a jar) is
         # the thing under test, so re-implementing the packaging here would test something else.
@@ -147,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
         failures = []
         for command in ordered:
             print(f"\n=== {command.name} ===")
-            if run_script(command.script, list(command.default_args)) != 0:
+            if run_script(command.script, list(command.default_args), command.verb) != 0:
                 failures.append(command.name)
                 if command.stage == "gate" and len(targets) == 1:
                     break
@@ -165,14 +166,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"unknown command: {name}\n", file=sys.stderr)
             describe()
             return 2
-        return run_script(command.script, extra or list(command.default_args))
+        return run_script(command.script, extra or list(command.default_args), command.verb)
 
     command = BY_NAME.get(head)
     if command is None:
         print(f"unknown command: {head}\n", file=sys.stderr)
         describe()
         return 2
-    return run_script(command.script, rest or list(command.default_args))
+    return run_script(command.script, rest or list(command.default_args), command.verb)
 
 
 if __name__ == "__main__":

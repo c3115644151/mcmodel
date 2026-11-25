@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import subprocess
 import tempfile
@@ -40,6 +41,19 @@ from item_icon_proxy import (
     wrap_gui_only,
 )
 from item_icon_preview import visible_projected_measurements
+
+
+def mirror_path(root: Path, path: Path) -> None:
+    """Copy one written resource into build/resources/main, keeping its path under assets/."""
+    try:
+        relative = path.resolve().relative_to((root / "src" / "main" / "resources").resolve())
+    except ValueError:
+        return
+    target = root / "build" / "resources" / "main" / relative
+    if target.is_file() and target.read_bytes() == path.read_bytes():
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(path, target)
 
 
 def write_json_atomic(path: Path, payload: object) -> None:
@@ -166,6 +180,8 @@ def main() -> int:
     parser.add_argument("--target-size", type=float, default=16.0,
                         help="maximum 3D model-space edge of each icon proxy (default: one vanilla block)")
     parser.add_argument("--report", type=Path, default=None, help="optional JSON audit report output")
+    parser.add_argument("--mirror", action="store_true",
+                        help="copy what this run rewrote into build/resources/main, where the preview client reads it")
     args = parser.parse_args()
 
     root = (args.root or Path.cwd()).resolve()
@@ -367,6 +383,12 @@ def main() -> int:
             manifest_path,
             {"version": 1, "items": dict(sorted(merged.items()))},
         )
+        if args.mirror:
+            # The preview client runs from build/resources/main, so a proxy that only exists under
+            # src keeps rendering the previous sheet until something else writes the mirror. That
+            # is exactly how an item icon kept an old lamp_shell while the hand copy moved on.
+            for path in list(proxy_updates) + list(item_updates):
+                mirror_path(root, path)
 
     for entry in report:
         if entry.get("variants"):
