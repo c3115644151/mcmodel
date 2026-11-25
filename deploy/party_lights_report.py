@@ -46,6 +46,7 @@ TEXTURES = ASSETS / "textures/block"
 STATE = ASSETS / "blockstates/party_lights.json"
 SOURCE = ROOT / "tools/deploy/model_sources/party_lights/party_lights.bbmodel"
 BLOCK = ROOT / "src/main/java/com/pastoralhome/block/PartyLightsBlock.java"
+RENDERER = ROOT / "src/main/java/com/pastoralhome/client/renderer/BridgeRopeRenderer.java"
 ITEM = ASSETS / "items/party_lights.json"
 
 SHEET_SIZE = (32, 128)
@@ -568,6 +569,43 @@ def particle_checks():
               "particle: " + state + " breaks as " + want)
 
 
+def arithmetic(text):
+    """Value of a Java float expression such as "1.0F / 16.0F + 0.002F", or None."""
+    text = re.sub(r"([0-9])[Ff]\b", r"\1", text).strip()
+    if not re.fullmatch(r"[0-9.+\-*/() ]+", text):
+        return None
+    try:
+        return float(eval(text, {"__builtins__": {}}, {}))
+    except (SyntaxError, ZeroDivisionError, TypeError):
+        return None
+
+
+def hanger_checks():
+    """The rope hangs lamps by the model's top, so the renderer's anchor and the geometry must agree."""
+    source = RENDERER.read_text(encoding="utf-8")
+    values = {}
+    for name in ("ANCHOR_X", "ANCHOR_Y", "ANCHOR_Z", "HANGER_SINK"):
+        match = re.search(name + r"\s*=\s*([^;]+);", source)
+        values[name] = match.group(1).strip() if match else None
+        check(bool(match), "hanger: BridgeRopeRenderer declares " + name)
+    placed = load(MODELS / "party_lights_lit.json")
+    lows = [element["from"] for element in placed["elements"]]
+    highs = [element["to"] for element in placed["elements"]]
+    top = max(high[1] for high in highs)
+    middle_x = (min(low[0] for low in lows) + max(high[0] for high in highs)) / 2.0
+    middle_z = (min(low[2] for low in lows) + max(high[2] for high in highs)) / 2.0
+    check(top == 16.0, "hanger: the lamp model reaches y=16 " + str(top))
+    for name, want in (("ANCHOR_Y", top), ("ANCHOR_X", middle_x), ("ANCHOR_Z", middle_z)):
+        text = values.get(name) or ""
+        got = float(re.sub(r"[Ff]$", "", text)) if text else None
+        check(got == want,
+              "hanger: " + name + " sits on the model's top centre " + str(want) + " but is " + str(text))
+    sink = values.get("HANGER_SINK") or ""
+    amount = arithmetic(sink)
+    check(amount is not None and 0.0625 <= amount <= 0.1,
+          "hanger: HANGER_SINK clears the rope half but stays under a quarter " + sink)
+
+
 def main():
     geometry_checks()
     uv_checks()
@@ -577,6 +615,7 @@ def main():
     item_checks()
     display_checks()
     particle_checks()
+    hanger_checks()
     contract_checks()
     failed = [label for ok, label in checks if not ok]
     for label in failed:
