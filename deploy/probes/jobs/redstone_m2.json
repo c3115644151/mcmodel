@@ -1,0 +1,395 @@
+{
+  "name": "redstone_m2",
+  "reset": [
+    "gamerule doDaylightCycle false",
+    "time set 6000",
+    "weather clear 1000000",
+    "gamemode creative Dev",
+    "fill 108 -63 -212 144 -44 -190 air",
+    "fill 108 -63 -212 144 -63 -190 stone",
+    "kill @e[type=minecraft:item]",
+    "setblock 119 -61 -200 oak_fence",
+    "setblock 125 -61 -200 oak_fence",
+    "summon pastoral_home:bridge_rope 122.0 -61 -199.5 {start_x:119.0,start_y:-61.0,start_z:-200.0,end_x:125.0,end_y:-61.0,end_z:-200.0,lamps:\"0.2,0.5,0.8\",lamp_mode:0}",
+    "fill 110 -62 -202 132 -60 -198 air replace pastoral_home:party_lights"
+  ],
+  "waitMs": 2500,
+  "steps": [
+    {
+      "name": "off",
+      "waitMs": 2500,
+      "place": [
+        {
+          "position": [
+            119,
+            -62,
+            -200
+          ],
+          "blockId": "pastoral_home:party_lights_controller[facing=north,powered=false]"
+        },
+        {
+          "position": [
+            120,
+            -62,
+            -200
+          ],
+          "blockId": "pastoral_home:party_lights[attach=down,facing=north,mode=off,lit=false]"
+        },
+        {
+          "position": [
+            121,
+            -62,
+            -200
+          ],
+          "blockId": "pastoral_home:party_lights[attach=down,facing=north,mode=off,lit=false]"
+        },
+        {
+          "position": [
+            122,
+            -62,
+            -200
+          ],
+          "blockId": "pastoral_home:party_lights[attach=down,facing=north,mode=off,lit=false]"
+        },
+        {
+          "position": [
+            123,
+            -62,
+            -200
+          ],
+          "blockId": "pastoral_home:party_lights[attach=down,facing=north,mode=off,lit=false]"
+        }
+      ],
+      "checks": [
+        {
+          "position": [
+            120,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "off"
+          }
+        },
+        {
+          "position": [
+            123,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "off"
+          }
+        }
+      ],
+      "shots": [
+        {
+          "name": "off_wide",
+          "out": "build/shots/m2_off_wide.png",
+          "time": 18000,
+          "camera": {
+            "x": 121.5,
+            "y": -62,
+            "z": -194.6,
+            "yaw": 180,
+            "pitch": 10
+          }
+        }
+      ],
+      "entityChecks": [
+        {
+          "type": "pastoral_home:bridge_rope",
+          "position": [
+            122,
+            -61,
+            -199.5
+          ],
+          "path": "lamp_mode",
+          "expect": 0
+        }
+      ]
+    },
+    {
+      "name": "on",
+      "waitMs": 2000,
+      "place": [
+        {
+          "position": [
+            118,
+            -62,
+            -200
+          ],
+          "blockId": "minecraft:redstone_block"
+        }
+      ],
+      "checks": [
+        {
+          "position": [
+            120,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "remote"
+          }
+        },
+        {
+          "position": [
+            121,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "remote"
+          }
+        },
+        {
+          "position": [
+            122,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "remote"
+          }
+        },
+        {
+          "position": [
+            123,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "remote"
+          }
+        },
+        {
+          "position": [
+            119,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights_controller",
+          "properties": {
+            "powered": "true"
+          }
+        }
+      ],
+      "shots": [
+        {
+          "name": "on_wide",
+          "out": "build/shots/m2_on_wide.png",
+          "time": 18000,
+          "camera": {
+            "x": 121.5,
+            "y": -62,
+            "z": -194.6,
+            "yaw": 180,
+            "pitch": 10
+          }
+        }
+      ],
+      "entityChecks": [
+        {
+          "type": "pastoral_home:bridge_rope",
+          "position": [
+            122,
+            -61,
+            -199.5
+          ],
+          "path": "lamp_mode",
+          "expect": 4
+        },
+        {
+          "type": "pastoral_home:bridge_rope",
+          "position": [
+            122,
+            -61,
+            -199.5
+          ],
+          "path": "drive",
+          "expect": "15,1,16,4,5,7,7"
+        }
+      ]
+    },
+    {
+      "name": "handback",
+      "waitMs": 2000,
+      "place": [
+        {
+          "position": [
+            121,
+            -62,
+            -200
+          ],
+          "blockId": "pastoral_home:party_lights[attach=down,facing=north,mode=steady,lit=true]"
+        }
+      ],
+      "checks": [
+        {
+          "position": [
+            121,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "steady"
+          }
+        }
+      ],
+      "shots": [
+        {
+          "name": "wide",
+          "out": "build/shots/m2_wide.png",
+          "time": 18000,
+          "camera": {
+            "x": 121.5,
+            "y": -62,
+            "z": -194.6,
+            "yaw": 180,
+            "pitch": 10
+          }
+        }
+      ],
+      "entityChecks": [
+        {
+          "type": "pastoral_home:bridge_rope",
+          "position": [
+            122,
+            -61,
+            -199.5
+          ],
+          "path": "lamp_mode",
+          "expect": 4
+        }
+      ]
+    },
+    {
+      "name": "release",
+      "waitMs": 2000,
+      "place": [
+        {
+          "position": [
+            118,
+            -62,
+            -200
+          ],
+          "blockId": "minecraft:air"
+        }
+      ],
+      "checks": [
+        {
+          "position": [
+            120,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "off"
+          }
+        },
+        {
+          "position": [
+            122,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "off"
+          }
+        },
+        {
+          "position": [
+            121,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "steady"
+          }
+        },
+        {
+          "position": [
+            119,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights_controller",
+          "properties": {
+            "powered": "false"
+          }
+        }
+      ],
+      "shots": [
+        {
+          "name": "release_wide",
+          "out": "build/shots/m2_release_wide.png",
+          "time": 18000,
+          "camera": {
+            "x": 121.5,
+            "y": -62,
+            "z": -194.6,
+            "yaw": 180,
+            "pitch": 10
+          }
+        }
+      ],
+      "entityChecks": [
+        {
+          "type": "pastoral_home:bridge_rope",
+          "position": [
+            122,
+            -61,
+            -199.5
+          ],
+          "path": "lamp_mode",
+          "expect": 0
+        }
+      ]
+    }
+  ],
+  "entities": [
+    {
+      "type": "pastoral_home:bridge_rope",
+      "min": 1,
+      "position": [
+        122,
+        -61,
+        -199.5
+      ],
+      "radius": 30
+    }
+  ],
+  "blocks": [
+    [
+      120,
+      -62,
+      -200
+    ],
+    [
+      121,
+      -62,
+      -200
+    ],
+    [
+      122,
+      -62,
+      -200
+    ],
+    [
+      123,
+      -62,
+      -200
+    ]
+  ]
+}

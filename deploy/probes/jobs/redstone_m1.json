@@ -1,0 +1,452 @@
+{
+  "name": "redstone_m1",
+  "reload": {
+    "command": "pastoral_home_preview reload",
+    "settleMs": 25000
+  },
+  "script": "tools/deploy/probes/scenes/redstone_on.js",
+  "steps": [
+    {
+      "waitMs": 2000,
+      "place": [
+        {
+          "position": [
+            113,
+            -62,
+            -200
+          ],
+          "blockId": "minecraft:comparator[facing=east,mode=compare,powered=false]"
+        },
+        {
+          "position": [
+            114,
+            -62,
+            -200
+          ],
+          "blockId": "pastoral_home:party_lights_controller[facing=north,powered=false]"
+        },
+        {
+          "position": [
+            115,
+            -61,
+            -200
+          ],
+          "blockId": "minecraft:stone"
+        },
+        {
+          "position": [
+            115,
+            -62,
+            -200
+          ],
+          "blockId": "pastoral_home:party_lights[attach=up,facing=south,mode=off,lit=false]"
+        },
+        {
+          "position": [
+            116,
+            -61,
+            -200
+          ],
+          "blockId": "minecraft:stone"
+        },
+        {
+          "position": [
+            116,
+            -62,
+            -200
+          ],
+          "blockId": "pastoral_home:party_lights[attach=up,facing=south,mode=off,lit=false]"
+        },
+        {
+          "position": [
+            117,
+            -61,
+            -200
+          ],
+          "blockId": "minecraft:stone"
+        },
+        {
+          "position": [
+            117,
+            -62,
+            -200
+          ],
+          "blockId": "pastoral_home:party_lights[attach=up,facing=south,mode=off,lit=false]"
+        },
+        {
+          "position": [
+            118,
+            -61,
+            -200
+          ],
+          "blockId": "minecraft:stone"
+        },
+        {
+          "position": [
+            118,
+            -62,
+            -200
+          ],
+          "blockId": "pastoral_home:party_lights[attach=up,facing=south,mode=off,lit=false]"
+        },
+        {
+          "position": [
+            121,
+            -61,
+            -200
+          ],
+          "blockId": "minecraft:stone"
+        },
+        {
+          "position": [
+            121,
+            -62,
+            -200
+          ],
+          "blockId": "pastoral_home:party_lights[attach=up,facing=south,mode=off,lit=false]"
+        }
+      ],
+      "checks": [
+        {
+          "position": [
+            116,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "off"
+          }
+        },
+        {
+          "position": [
+            121,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "off"
+          }
+        }
+      ],
+      "name": "on"
+    },
+    {
+      "waitMs": 1500,
+      "place": [
+        {
+          "position": [
+            114,
+            -61,
+            -200
+          ],
+          "blockId": "minecraft:redstone_block"
+        }
+      ],
+      "commands": [
+        "data get block 113 -62 -200"
+      ],
+      "checks": [
+        {
+          "position": [
+            114,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights_controller",
+          "properties": {
+            "powered": "true"
+          }
+        },
+        {
+          "position": [
+            115,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "remote"
+          }
+        },
+        {
+          "position": [
+            116,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "remote"
+          }
+        },
+        {
+          "position": [
+            117,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "remote"
+          }
+        },
+        {
+          "position": [
+            118,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "remote"
+          }
+        },
+        {
+          "position": [
+            121,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "off"
+          }
+        }
+      ],
+      "shots": [
+        {
+          "name": "on",
+          "out": "build/shots/redstone_on_frame.png",
+          "subject": [
+            [
+              115,
+              -62,
+              -200
+            ],
+            [
+              116,
+              -62,
+              -200
+            ],
+            [
+              117,
+              -62,
+              -200
+            ],
+            [
+              118,
+              -62,
+              -200
+            ]
+          ],
+          "feet": -62,
+          "distance": 9,
+          "elevation": 22,
+          "azimuth": 30,
+          "zoom": 1.6,
+          "time": 12000
+        }
+      ],
+      "name": "handback"
+    },
+    {
+      "waitMs": 1500,
+      "place": [
+        {
+          "position": [
+            116,
+            -62,
+            -200
+          ],
+          "blockId": "pastoral_home:party_lights[attach=up,facing=south,mode=steady,lit=true]"
+        }
+      ],
+      "checks": [
+        {
+          "position": [
+            116,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "steady",
+            "lit": "true"
+          }
+        },
+        {
+          "position": [
+            115,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "remote"
+          }
+        }
+      ],
+      "shots": [
+        {
+          "name": "handback",
+          "out": "build/shots/redstone_handback_frame.png",
+          "subject": [
+            [
+              115,
+              -62,
+              -200
+            ],
+            [
+              116,
+              -62,
+              -200
+            ],
+            [
+              117,
+              -62,
+              -200
+            ],
+            [
+              118,
+              -62,
+              -200
+            ]
+          ],
+          "feet": -62,
+          "distance": 9,
+          "elevation": 22,
+          "azimuth": 30,
+          "zoom": 1.6,
+          "time": 12000
+        }
+      ],
+      "name": "off"
+    },
+    {
+      "waitMs": 1500,
+      "place": [
+        {
+          "position": [
+            114,
+            -61,
+            -200
+          ],
+          "blockId": "minecraft:air"
+        }
+      ],
+      "commands": [
+        "data get block 113 -62 -200"
+      ],
+      "checks": [
+        {
+          "position": [
+            114,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights_controller",
+          "properties": {
+            "powered": "false"
+          }
+        },
+        {
+          "position": [
+            115,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "off",
+            "lit": "false"
+          }
+        },
+        {
+          "position": [
+            116,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "steady",
+            "lit": "true"
+          }
+        },
+        {
+          "position": [
+            117,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "off",
+            "lit": "false"
+          }
+        },
+        {
+          "position": [
+            118,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "off",
+            "lit": "false"
+          }
+        },
+        {
+          "position": [
+            121,
+            -62,
+            -200
+          ],
+          "id": "pastoral_home:party_lights",
+          "properties": {
+            "mode": "off"
+          }
+        }
+      ],
+      "shots": [
+        {
+          "name": "off",
+          "out": "build/shots/redstone_off_frame.png",
+          "subject": [
+            [
+              115,
+              -62,
+              -200
+            ],
+            [
+              116,
+              -62,
+              -200
+            ],
+            [
+              117,
+              -62,
+              -200
+            ],
+            [
+              118,
+              -62,
+              -200
+            ]
+          ],
+          "feet": -62,
+          "distance": 9,
+          "elevation": 22,
+          "azimuth": 30,
+          "zoom": 1.6,
+          "time": 12000
+        }
+      ],
+      "name": "recheck"
+    }
+  ],
+  "shots": []
+}
