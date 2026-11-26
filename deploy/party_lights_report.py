@@ -283,13 +283,12 @@ def sheet_checks():
     expected = {f"party_lights_{part}_{state}.png" for state in STATE_FRAMES
                 for part in ("core", "shell")}
     expected |= {"party_lights_shell_item.png"}
-    # lit ships its animated strip, so each of those two sheets owns a descriptor next to it. The
-    # build still writes a name_particle.png next to any atlas-backed model, so those stay permitted.
+    # Both states are now static frames: no .mcmeta ships with any lamp sheet. A placed lamp
+    # changes look only through its block state, so STEADY really is steady.
+    # The build still writes a name_particle.png next to any atlas-backed model, so those stay permitted.
+    # The controller is drawn procedurally by the same generator, so its three tiles live in this
+    # folder too and would otherwise read as orphans of the lamp pipeline.
     allowed = (expected | {stem + "_particle.png" for stem in stems}
-               | {f"party_lights_{part}_lit.png.mcmeta" for part in ("core", "shell")}
-               | {"party_lights_shell_item.png.mcmeta"}
-               # The controller is drawn procedurally by the same generator, so its three tiles live
-               # in this folder too and would otherwise read as orphans of the lamp pipeline.
                | {"party_lights_controller_side.png", "party_lights_controller_face_off.png",
                   "party_lights_controller_face_on.png", "party_lights_controller_particle.png",
                   "party_lights_controller_lit_particle.png"})
@@ -298,86 +297,59 @@ def sheet_checks():
           "sheet: only the two frames per state and their particle copies ship - unexpected "
           + str(sorted(shipped - allowed)) + ", missing " + str(sorted(expected - shipped)))
     strip = source_sheet()
-    dim = source_frame(0)
-    # The artist animated the lamp inside the texture: four 32x32 rows, rows 0-1 in the dim palette and
-    # rows 2-3 in the bright one, 6 ticks each. Unlit therefore ships a single static frame and lit
-    # ships the whole strip with an animation descriptor. Only the shell's painted texels are frost
-    # moulded; the core keeps the artist's binary alpha so the bulb stays solid behind the paper.
-    shells = {"core": SOURCE_ALPHA, "shell": SHELL_ALPHA}
-    for part in ("core", "shell"):
+    dim = source_frame(STATE_FRAMES['unlit'])
+    bright = source_frame(STATE_FRAMES['lit'])
+    # Both states are static frames now: the lamp changes look only through the block state's
+    # `lit` property. A shared texture animation made every lamp breathe in lockstep and kept a
+    # STEADY lamp visibly flickering while its light level never moved, so no lamp sheet may
+    # carry an .mcmeta. Only the shell's painted texels are alpha-moulded; the core keeps the
+    # artist's binary alpha so the bulb stays solid behind the paper cage.
+    shells = {'core': SOURCE_ALPHA, 'shell': SHELL_ALPHA}
+    for part in ('core', 'shell'):
         alpha = shells[part]
-        unlit = f"party_lights_{part}_unlit"
-        path = TEXTURES / (unlit + ".png")
-        check(path.exists(), "sheet: " + unlit + " exists")
-        if path.exists():
-            image = Image.open(path).convert("RGBA")
-            check(image.size == (FRAME, FRAME), "sheet: " + unlit + " is the 32x32 dim frame " + str(image.size))
-            if image.size == (FRAME, FRAME):
-                off = texels_differing(image, dim, rgb_only=(part == "shell"))
-                check(not off, "sheet: " + unlit + " carries artist frame 0's colours - "
-                      + str(len(off)) + " texels off")
-                check(alpha_moulded(image, dim, alpha),
-                      "sheet: " + unlit + " paints the shell at alpha " + str(alpha)
-                      + " and keeps every clear seam clear")
-                check(sum(1 for pixel in image.getdata() if pixel[3] == 0) > 0,
-                      "sheet: " + unlit + " keeps the artist's clear seams")
-            check(not (TEXTURES / (unlit + ".png.mcmeta")).exists(),
-                  "sheet: " + unlit + " is static and carries no animation descriptor")
-
-        lit = f"party_lights_{part}_lit"
-        path = TEXTURES / (lit + ".png")
-        check(path.exists(), "sheet: " + lit + " exists")
-        if path.exists():
-            image = Image.open(path).convert("RGBA")
-            check(image.size == SHEET_SIZE, "sheet: " + lit + " is the whole 32x128 strip " + str(image.size))
-            if image.size == SHEET_SIZE:
-                off = texels_differing(image, strip, rgb_only=(part == "shell"))
-                check(not off, "sheet: " + lit + " carries the artist's strip colours - "
-                      + str(len(off)) + " texels off")
-                check(alpha_moulded(image, strip, alpha),
-                      "sheet: " + lit + " paints the shell at alpha " + str(alpha)
-                      + " on every frame and keeps the clear seams clear")
-                rows = [image.crop((0, row * FRAME, FRAME, (row + 1) * FRAME)) for row in range(4)]
-                check(list(rows[0].getdata()) == list(rows[1].getdata())
-                      and list(rows[2].getdata()) == list(rows[3].getdata()),
-                      "sheet: " + lit + " pairs its rows the way the artist drew them")
-                check(list(rows[0].getdata()) != list(rows[2].getdata()),
-                      "sheet: " + lit + " really cycles dim to bright, not four identical rows")
-                check(sum(1 for pixel in rows[0].getdata() if pixel[3] == 0) > 0,
-                      "sheet: " + lit + " keeps the artist's clear seams")
-            meta_path = TEXTURES / (lit + ".png.mcmeta")
-            check(meta_path.exists(), "sheet: " + lit + " ships an animation descriptor")
-            if meta_path.exists():
-                meta = load(meta_path)
-                check(meta == {"animation": {"frametime": FRAMETIME}},
-                      "sheet: " + lit + " animates at the artist's " + str(FRAMETIME) + " ticks " + str(meta))
-            if part == "shell":
-                alphas = {pixel[3] for pixel in image.getdata()}
-                check(alphas == {0, SOURCE_ALPHA},
-                      "sheet: " + lit + " stays binary so a placed block keeps the cutout path "
-                      + str(sorted(alphas)))
-    item_sheet = TEXTURES / "party_lights_shell_item.png"
-    check(item_sheet.exists(), "sheet: party_lights_shell_item exists")
+        for state, want in (('unlit', dim), ('lit', bright)):
+            name = f'party_lights_{part}_{state}'
+            path = TEXTURES / (name + '.png')
+            check(path.exists(), 'sheet: ' + name + ' exists')
+            if path.exists():
+                image = Image.open(path).convert('RGBA')
+                check(image.size == (FRAME, FRAME),
+                      'sheet: ' + name + ' is a 32x32 static frame ' + str(image.size))
+                if image.size == (FRAME, FRAME):
+                    off = texels_differing(image, want, rgb_only=(part == 'shell'))
+                    check(not off, 'sheet: ' + name + ' carries the artist frame colours - '
+                          + str(len(off)) + ' texels off')
+                    check(alpha_moulded(image, want, alpha),
+                          'sheet: ' + name + ' paints the shell at alpha ' + str(alpha)
+                          + ' and keeps every clear seam clear')
+                    check(sum(1 for pixel in image.getdata() if pixel[3] == 0) > 0,
+                          'sheet: ' + name + ' keeps the artist\'s clear seams')
+                if part == 'shell':
+                    alphas = {pixel[3] for pixel in image.getdata()}
+                    check(alphas == {0, SOURCE_ALPHA},
+                          'sheet: ' + name + ' stays binary so a placed block keeps the cutout path '
+                          + str(sorted(alphas)))
+            check(not (TEXTURES / (name + '.png.mcmeta')).exists(),
+                  'sheet: ' + name + ' is static and carries no animation descriptor')
+    item_sheet = TEXTURES / 'party_lights_shell_item.png'
+    check(item_sheet.exists(), 'sheet: party_lights_shell_item exists')
     if item_sheet.exists():
-        image = Image.open(item_sheet).convert("RGBA")
-        check(image.size == SHEET_SIZE,
-              "sheet: party_lights_shell_item is the whole 32x128 strip " + str(image.size))
-        if image.size == SHEET_SIZE:
-            off = texels_differing(image, strip, rgb_only=True)
-            check(not off, "sheet: party_lights_shell_item carries the artist's strip colours - "
-                  + str(len(off)) + " texels off")
-            check(alpha_moulded(image, strip, ITEM_SHELL_ALPHA),
-                  "sheet: party_lights_shell_item paints the paper at alpha " + str(ITEM_SHELL_ALPHA)
-                  + " and keeps every clear seam clear")
+        image = Image.open(item_sheet).convert('RGBA')
+        check(image.size == (FRAME, FRAME),
+              'sheet: party_lights_shell_item is a 32x32 static frame ' + str(image.size))
+        if image.size == (FRAME, FRAME):
+            off = texels_differing(image, bright, rgb_only=True)
+            check(not off, 'sheet: party_lights_shell_item carries the artist lit frame colours - '
+                  + str(len(off)) + ' texels off')
+            check(alpha_moulded(image, bright, ITEM_SHELL_ALPHA),
+                  'sheet: party_lights_shell_item paints the paper at alpha ' + str(ITEM_SHELL_ALPHA)
+                  + ' and keeps every clear seam clear')
             alphas = {pixel[3] for pixel in image.getdata()}
             check(ITEM_SHELL_ALPHA in alphas and 0 in alphas,
-                  "sheet: party_lights_shell_item really carries a translucent texel, which is what "
-                  "puts its quads on the blended item sheet " + str(sorted(alphas)))
-        meta_path = TEXTURES / "party_lights_shell_item.png.mcmeta"
-        check(meta_path.exists(), "sheet: party_lights_shell_item ships an animation descriptor")
-        if meta_path.exists():
-            check(load(meta_path) == {"animation": {"frametime": FRAMETIME}},
-                  "sheet: party_lights_shell_item animates at the artist's " + str(FRAMETIME) + " ticks")
+                  'sheet: party_lights_shell_item really carries a translucent texel, which is what '
+                  'puts its quads on the blended item sheet ' + str(sorted(alphas)))
+        check(not (TEXTURES / 'party_lights_shell_item.png.mcmeta').exists(),
+              'sheet: party_lights_shell_item is static and carries no animation descriptor')
 
 
 def state_checks():
@@ -774,6 +746,25 @@ def rope_network_checks():
           "network: a rope waking its controller is a helper, not a second copy of the flood fill")
     check("PartyLightsNetwork.invalidateNear" in entity,
           "rope entity: hanging or taking a lamp wakes the controller, which has no neighbour change to see")
+    # Entity.getBoundingBox() is final; makeBoundingBox(Vec3) is the protected hook every
+    # setPos/reapplyPosition eventually calls. Overriding it with the cord span is the only
+    # fix that survives spawn packets and command summons, which setPos after loading NBT.
+    check("protected AABB makeBoundingBox(Vec3 position)" in entity
+          and "return bounds(this.start(), this.end())" in entity,
+          "rope entity: every position refresh keeps the whole cord pickable")
+    check("onSyncedDataUpdated(EntityDataAccessor<?>" in entity
+          and "onSyncedDataUpdated(List<SynchedEntityData.DataValue<?>>" in entity,
+          "rope entity: also rebuilds its pick box on both sync callbacks")
+    check("START.equals(accessor) || END.equals(accessor)" in entity,
+          "rope entity: only the two anchors trigger the per-field rebuild")
+    # BEACON is a building-wide double flash: every lamp under one controller locks to that
+    # controller's seed, and the cord receives the same seed through the focus slot.
+    check("PartyLightsProgram.BEACON" in be and "seedOf(this.worldPosition)" in be,
+          "controller entity: block lamps share the controller seed for BEACON")
+    check("wireFocus" in be and "program == PartyLightsProgram.BEACON ? this.worldPosition" in be,
+          "controller entity: cords get the controller position as the BEACON phase anchor")
+    check("program == PartyLightsProgram.BEACON && focus != null" in drive and "seedOf(focus)" in drive,
+          "rope drive: a driven cord locks BEACON to the controller seed")
 
 
 def score_checks():
@@ -855,7 +846,26 @@ def score_checks():
                   "score data: " + name + " focus is a position or absent")
 
 
+def player_and_chain_checks():
+    """The four player-observation fixes: shift-to-off, Jade name, static sheets, cord chain claim."""
+    block = BLOCK.read_text(encoding="utf-8")
+    check("player.isSecondaryUseActive() ? Mode.OFF" in block,
+          "player: sneak right-click turns the lamp straight off, not a four-step cycle")
+    lang = ROOT / "src/main/java/com/pastoralhome/data/ModLanguageProvider.java"
+    check("addEntityType(ModEntities.BRIDGE_ROPE" in lang.read_text(encoding="utf-8"),
+          "Jade: the rope entity has a display name, not the raw language key")
+    be = CONTROLLER_BE.read_text(encoding="utf-8")
+    check("members.count() == 0" not in be[be.find("private List<BridgeRopeEntity> findRopes"):
+                                           be.find("private List<BridgeRopeEntity> findRopes") + 4000],
+          "network: a controller wired only to a fence still owns its cord")
+    check("while (grew)" in be and "cells.add(support.asLong())" in be
+          and "claimed.contains(rope.getId())" in be,
+          "network: claiming one cord adds its supports so a chained cord joins transitively")
+    check("members.count() == 0 && ropes.isEmpty()" in be,
+          "network: a rope-only controller still drives its cords (no block lamps needed)")
+
 def main():
+    player_and_chain_checks()
     rope_network_checks()
     score_checks()
     geometry_checks()

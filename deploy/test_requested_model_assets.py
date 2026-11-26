@@ -152,7 +152,9 @@ class RequestedModelAssetTests(unittest.TestCase):
         proxy = read(ASSETS / "models/item_icons/spruce_planter/variant_0.json")
         bounds = geometry_bounds(proxy)
         self.assertIsNotNone(bounds)
-        self.assertTrue(all(-1e-4 <= value <= 16.0001 for value in bounds), bounds)
+        # The GUI fit may recenter geometry outside 0..16; Minecraft accepts
+        # cuboids anywhere in [-16,32].
+        self.assertTrue(all(-16.0001 <= value <= 32.0001 for value in bounds), bounds)
         visible = visible_projected_measurements(proxy, lambda ref: resolve_texture(ROOT, ref), pixels_per_unit=8)
         self.assertIsNotNone(visible)
         gui_scale = proxy["display"]["gui"]["scale"]

@@ -1,0 +1,113 @@
+{
+  "name": "redstone_chain",
+  "reset": [
+    "gamerule doDaylightCycle false",
+    "time set 6000",
+    "weather clear 1000000",
+    "gamemode creative Dev",
+    "fill 108 -63 -212 144 -44 -190 air",
+    "fill 108 -63 -212 144 -63 -190 stone",
+    "kill @e[type=minecraft:item]",
+    "kill @e[type=pastoral_home:bridge_rope]",
+    "setblock 119 -61 -200 oak_fence",
+    "setblock 125 -61 -200 oak_fence",
+    "setblock 131 -61 -200 oak_fence",
+    "summon pastoral_home:bridge_rope 122.0 -61 -199.5 {start_x:119.0,start_y:-61.0,start_z:-200.0,end_x:125.0,end_y:-61.0,end_z:-200.0,lamps:\"0.3,0.5,0.7\",lamp_mode:0}",
+    "summon pastoral_home:bridge_rope 128.0 -61 -199.5 {start_x:125.0,start_y:-61.0,start_z:-200.0,end_x:131.0,end_y:-61.0,end_z:-200.0,lamps:\"0.3,0.5,0.7\",lamp_mode:0}"
+  ],
+  "waitMs": 2500,
+  "steps": [
+    {
+      "name": "off",
+      "waitMs": 2500,
+      "place": [
+        {
+          "position": [
+            119,
+            -62,
+            -200
+          ],
+          "blockId": "pastoral_home:party_lights_controller[facing=north,powered=false]"
+        }
+      ],
+      "entityChecks": [
+        {
+          "type": "pastoral_home:bridge_rope",
+          "position": [
+            122.5,
+            -60.375,
+            -199.5
+          ],
+          "path": "lamp_mode",
+          "expect": 0
+        },
+        {
+          "type": "pastoral_home:bridge_rope",
+          "position": [
+            128.5,
+            -60.375,
+            -199.5
+          ],
+          "path": "lamp_mode",
+          "expect": 0
+        }
+      ]
+    },
+    {
+      "name": "on",
+      "waitMs": 2500,
+      "place": [
+        {
+          "position": [
+            118,
+            -62,
+            -200
+          ],
+          "blockId": "minecraft:redstone_block"
+        }
+      ],
+      "entityChecks": [
+        {
+          "type": "pastoral_home:bridge_rope",
+          "position": [
+            122.5,
+            -60.375,
+            -199.5
+          ],
+          "path": "lamp_mode",
+          "expect": 4
+        },
+        {
+          "type": "pastoral_home:bridge_rope",
+          "position": [
+            122.5,
+            -60.375,
+            -199.5
+          ],
+          "path": "drive",
+          "contains": "15,1,16"
+        },
+        {
+          "type": "pastoral_home:bridge_rope",
+          "position": [
+            128.5,
+            -60.375,
+            -199.5
+          ],
+          "path": "lamp_mode",
+          "expect": 4
+        },
+        {
+          "type": "pastoral_home:bridge_rope",
+          "position": [
+            128.5,
+            -60.375,
+            -199.5
+          ],
+          "path": "drive",
+          "contains": "15,1,16"
+        }
+      ]
+    }
+  ]
+}

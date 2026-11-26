@@ -62,60 +62,44 @@ class InstrumentAssetTests(unittest.TestCase):
         for path in models:
             model = read(path)
             self.assertTrue(model["elements"], path.name)
-            # The keyboard is a shelf assembly (tools/deploy/prepare_piano_models.py), so a cell
-            # declares the palette exactly when it holds key pieces, and those pieces live in the
-            # lower layer only. The pieces are: a wooden key slip carrying the artist's painted lip
-            # on its north face, one continuous ivory field seen from above, ten raised navy blacks
-            # and a nameboard behind them. There is deliberately no per-key seam geometry: the white
-            # key separations live in the sheet that the field's front face samples, not the top face
-            # (a hairline on a grazing top face turns into diagonal mip slivers in game).
-            expected = {"pastoral_home:block/piano", "pastoral_home:block/piano_particle"}
-            keys = [element for element in model["elements"] if str(element.get("name", "")).startswith("key_")]
-            if keys:
-                expected.add("pastoral_home:block/piano_palette")
-                expected.add("pastoral_home:block/piano_keys")
-            self.assertEqual(set(model["textures"].values()), expected, path.name)
-            if path.name.startswith("piano_l1_"):
-                self.assertFalse(keys, f"{path.name} must not carry key pieces")
-            else:
-                self.assertTrue(keys, f"{path.name} carries no key pieces")
-                named = {element["name"]: element for element in keys}
-                field = named.get("key_field")
-                self.assertIsNotNone(field, f"{path.name} lost the ivory key field")
-                self.assertAlmostEqual(field["from"][1], SHELF_TOP_Y, delta=1e-6)
-                self.assertAlmostEqual(field["to"][1], FIELD_TOP_Y, delta=1e-6)
-                # Only the two side faces carry the palette, and a cell that ends the keyboard at
-                # its own border culls one of them; the sheet faces are checked just below.
-                self.assertLessEqual({face["texture"] for name, face in field["faces"].items()
-                                      if name not in ("up", "north")}, {"#piano_palette"})
-                self.assertEqual(field["faces"]["north"]["texture"], "#piano_keys",
-                                 f"{path.name} field fronts must carry the white-key seams")
-                self.assertIn("up", field["faces"], f"{path.name}: the player looks down on an ivory surface")
-                self.assertNotEqual(field["faces"]["up"]["texture"], "#piano_keys",
-                                    f"{path.name} top face must stay a flat ivory tone")
-                self.assertIn("north", field["faces"], f"{path.name}: the band of white front edges")
-                slip = named.get("key_slip")
-                self.assertIsNotNone(slip, f"{path.name} lost the wooden key slip")
-                self.assertAlmostEqual(slip["from"][1], BED_TOP_Y, delta=1e-6)
-                self.assertEqual(slip["faces"]["north"]["texture"], "#bb_texture_0",
-                                 f"{path.name} slip must keep the artist's painted lip")
-                raise_px = load_band_params()["black_raise_px"]
-                for black in (element for name, element in named.items() if name.startswith("key_black_")):
-                    self.assertAlmostEqual(black["from"][1], FIELD_TOP_Y, delta=1e-6,
-                                           msg=f"{path.name} black key sits on the field")
-                    self.assertAlmostEqual(black["to"][1], FIELD_TOP_Y + raise_px, delta=1e-6,
-                                           msg=f"{path.name} black key is raised")
-                    self.assertEqual({face["texture"] for face in black["faces"].values()}, {"#piano_palette"})
-                nameboard = named.get("key_nameboard")
-                self.assertIsNotNone(nameboard, f"{path.name} lost the nameboard")
-                self.assertAlmostEqual(nameboard["to"][1], CASING_TOP_Y, delta=1e-6)
-                self.assertFalse([name for name in named if name.startswith(("key_white", "key_seam"))],
-                                 f"{path.name} still carries retired per-key geometry")
-                for element in keys:
-                    self.assertLessEqual(element["to"][1], 16.0 + 1e-6,
-                                         f"{path.name}: {element['name']} straddles the upper cell")
+            textures = set(model["textures"].values())
+            self.assertIn("pastoral_home:block/piano_recolor_particle", textures, path.name)
+            self.assertIn("pastoral_home:block/piano_recolor", textures, path.name)
+            names = {str(element.get("name", "")) for element in model["elements"]}
+            self.assertFalse(any(name in ("piano_white_key", "piano_black_key") for name in names),
+                             f"{path.name} must not bake dynamic keys into the block model")
+            self.assertFalse("piano_palette" in textures or "piano_keys" in textures,
+                             f"{path.name} still uses the retired programmatic key art")
+            layers = [element for element in model["elements"]
+                      if "#bb_texture_1" in {face["texture"] for face in element["faces"].values()}]
+            backs = [element for element in model["elements"]
+                     if "#bb_texture_2" in {face["texture"] for face in element["faces"].values()}]
+            self.assertLessEqual(len(layers), 1, f"{path.name} has too many key-well floors")
+            self.assertLessEqual(len(backs), 1, f"{path.name} has too many key-well back walls")
+            for element in layers:
+                self.assertAlmostEqual(element["from"][1], 12.0, delta=1e-6, msg=path.name)
+                self.assertAlmostEqual(element["to"][1], 13.6, delta=1e-6, msg=path.name)
+            for element in backs:
+                self.assertAlmostEqual(element["from"][1], 13.6, delta=1e-6, msg=path.name)
+                self.assertAlmostEqual(element["to"][1], 16.0, delta=1e-6, msg=path.name)
+                self.assertAlmostEqual(element["from"][2], 5.7, delta=1e-6, msg=path.name)
             signatures.add(json.dumps(model["elements"], sort_keys=True))
         self.assertEqual(len(signatures), len(models), "each cell must hold a distinct fragment set")
+
+        for kind, texture in (("white", "piano_recolor_tex3"), ("black", "piano_recolor_tex4")):
+            model = read(ASSETS / f"models/block/piano_{kind}_key_standalone.json")
+            self.assertEqual(len(model["elements"]), 1, kind)
+            element = model["elements"][0]
+            self.assertEqual(element["name"], f"piano_{kind}_key", kind)
+            # Element coords are pixel units; FaceBakery divides by 16 when baking. The rear
+            # pivot is at z=0 (to face), the key extends toward -z (front).
+            self.assertAlmostEqual(element["from"][0], -element["to"][0], delta=1e-6, msg=kind)
+            self.assertAlmostEqual(element["to"][2], 0.0, delta=1e-6, msg=kind)
+            self.assertAlmostEqual(element["from"][1], 0.0, delta=1e-6, msg=kind)
+            faces = element["faces"]
+            self.assertEqual(faces["north"]["texture"], "#bb_texture_" + ("3" if kind == "white" else "4"), msg=kind)
+            self.assertEqual(set(model["textures"].values()),
+                             {f"pastoral_home:block/{texture}", "pastoral_home:block/piano_recolor_particle"}, msg=kind)
 
     def test_piano_is_centred_on_the_middle_cell(self):
         # The shell is 43px wide inside a 48px footprint. Flush against x = 0 all 5 leftover pixels

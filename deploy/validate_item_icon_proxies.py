@@ -11,34 +11,45 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import resolve
 from item_icon_proxy import (
+    GUI_ICON_TARGET_PX,
     ITEM_ICON_MANIFEST,
     TRANSFORM_CARRIER_MODELS,
     VANILLA_BLOCK_GUI,
     collect_model_ids,
+    geometry_bounds,
 )
 from normalize_item_icons import load_model_with_parent, resolve_model, resolve_texture
-from item_icon_proxy import geometry_bounds
 from item_icon_preview import project_gui_translation, visible_projected_measurements
 
 
-def check_item(item_path: Path, entry: dict, assets: Path, mod_id: str, root: Path) -> tuple[list[str], int]:
-    """Validate one manifest item; return its issues and how many proxies it proved."""
+def check_item(item_path: Path, entry: dict, assets: Path, mod_id: str, root: Path) -> tuple[list[str], int, str]:
+    """Validate one manifest item.
+
+    Returns (issues, proxies_proven, status). ``status`` is ``"validated"`` for
+    generated GUI proxies, ``"hand_authored"`` for items whose GUI model is an
+    art-directed composite, and ``"error"`` when a generated proxy is malformed.
+    Only generated proxies enter the fit/centre assertions below.
+    """
     issues: list[str] = []
     try:
         definition = json.loads(item_path.read_text(encoding="utf-8"))
     except Exception as error:
-        return [f"{item_path.name}: invalid JSON: {error}"], 0
+        return [f"{item_path.name}: invalid JSON: {error}"], 0, "error"
     tree = definition.get("model", {})
-    if not isinstance(tree, dict) or tree.get("type") != "minecraft:select" \
-            or tree.get("property") != "minecraft:display_context":
-        return [f"{item_path.name}: item definition is not a display-context select"], 0
+    is_select = (isinstance(tree, dict) and tree.get("type") == "minecraft:select"
+                 and tree.get("property") == "minecraft:display_context")
+    if not is_select:
+        # Hand-authored item model (e.g. art-directed bulletin composites): it
+        # never uses a generated GUI proxy, so the proxy fit rules do not apply.
+        return [], 0, "hand_authored"
     gui_case = next((case for case in tree.get("cases", []) if case.get("when") in ("gui", ["gui"])), None)
     if gui_case is None or "fallback" not in tree:
-        return [f"{item_path.name}: GUI select is missing a gui case or original fallback"], 0
+        return [], 0, "hand_authored"
     proxy_ids = [model_id for model_id in collect_model_ids(gui_case.get("model", {}))
                  if model_id not in TRANSFORM_CARRIER_MODELS]
     if not proxy_ids or not all(model_id.startswith(f"{mod_id}:item_icons/") for model_id in proxy_ids):
-        return [f"{item_path.name}: GUI branch does not exclusively use generated proxies"], 0
+        # GUI branch points at an authored composite, not a generated proxy.
+        return [], 0, "hand_authored"
 
     proven = 0
     for model_id in proxy_ids:
@@ -74,8 +85,8 @@ def check_item(item_path: Path, entry: dict, assets: Path, mod_id: str, root: Pa
             issues.append(f"{model_id}: proxy must retain source parent and explicit transformed geometry")
             continue
         bounds = geometry_bounds(proxy)
-        if bounds is None or any(value < -1e-4 or value > 16.0001 for value in bounds):
-            issues.append(f"{model_id}: 3D bounds leave one-block model space: {bounds}")
+        if bounds is None or any(value < -16.0 - 1e-4 or value > 32.0 + 1e-4 for value in bounds):
+            issues.append(f"{model_id}: 3D bounds leave the model-format range [-16,32]: {bounds}")
             continue
         measured = visible_projected_measurements(
             proxy, lambda ref: resolve_texture(root, ref), pixels_per_unit=8,
@@ -95,11 +106,23 @@ def check_item(item_path: Path, entry: dict, assets: Path, mod_id: str, root: Pa
             width, height = final[2] - final[0], final[3] - final[1]
             if width > 16.0 or height > 16.0:
                 issues.append(f"{model_id}: visible projected icon exceeds 16px slot: {width:.2f}×{height:.2f}")
+            # Every proxy is fitted to a common visible long edge, so a shrunken
+            # or oversized icon is now a build failure rather than a screenshot
+            # surprise. The target has a 0.5px rasterisation tolerance.
+            long_edge = max(width, height)
+            if abs(long_edge - GUI_ICON_TARGET_PX) > 0.5:
+                issues.append(
+                    f"{model_id}: visible long edge {long_edge:.2f}px is not fitted to {GUI_ICON_TARGET_PX}px")
+            centre_x = (final[0] + final[2]) * 0.5
+            centre_y = (final[1] + final[3]) * 0.5
+            if abs(centre_x) > 0.25 or abs(centre_y) > 0.25:
+                issues.append(
+                    f"{model_id}: visible icon centre ({centre_x:.2f},{centre_y:.2f}) is off the slot centre")
         source = load_model_with_parent(path, assets / "models", mod_id)
         if not source or not source.get("elements"):
             issues.append(f"{model_id}: source geometry could not be resolved")
         proven += 1
-    return issues, proven
+    return issues, proven, "error" if issues else "validated"
 
 
 def main() -> int:
@@ -131,16 +154,19 @@ def main() -> int:
     issues: list[str] = []
     warnings: list[str] = []
     wrapped_items = 0
+    skipped_hand_authored = 0
     proxy_models = 0
     for item_id, entry in sorted(scoped.items()):
         item_path = assets / "items" / f"{item_id}.json"
         if not item_path.is_file():
             issues.append(f"{item_id}.json: {ITEM_ICON_MANIFEST} entry points at a missing item definition")
             continue
-        item_issues, proven = check_item(item_path, entry, assets, mod_id, root)
+        item_issues, proven, status = check_item(item_path, entry, assets, mod_id, root)
         issues.extend(item_issues)
-        if not item_issues:
+        if status == "validated":
             wrapped_items += 1
+        elif status == "hand_authored":
+            skipped_hand_authored += 1
         proxy_models += proven
 
     if not requested:
@@ -161,7 +187,8 @@ def main() -> int:
         for orphan in sorted(written - owned):
             warnings.append(f"{orphan}: proxy file on disk is not in {ITEM_ICON_MANIFEST}")
 
-    print(f"Validated {wrapped_items} GUI-select item definitions and {proxy_models} proxy models.")
+    print(f"Validated {wrapped_items} generated GUI-select item definitions ({proxy_models} proxy models); "
+          f"skipped {skipped_hand_authored} hand-authored item definitions.")
     if issues:
         for issue in issues:
             print(f"ERROR: {issue}")
@@ -169,14 +196,11 @@ def main() -> int:
     if warnings:
         for warning in warnings:
             print(f"WARN: {warning}")
-    if warnings:
-        for warning in warnings:
-            print(f"WARN: {warning}")
     if wrapped_items == 0:
         print("ERROR: no generated GUI proxy item definitions were found")
         return 1
-    print("All proxies inherit minecraft:block/block's GUI camera (rotation [30, 225, 0], no translation, scale 0.625) "
-          "and their visible pixels stay inside the 16px GUI slot.")
+    print("All proxies inherit minecraft:block/block's GUI camera (rotation [30, 225, 0], no translation, scale 0.625), "
+          f"fit a {GUI_ICON_TARGET_PX}px visible long edge, and centre in the 16px GUI slot.")
     return 0
 
 

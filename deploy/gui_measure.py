@@ -107,12 +107,13 @@ def corners(model):
 
 
 def project_iso(p):
-    """MC GUI 等轴测正交投影 (30°/45°):
-    屏幕 x 向右, y 向下 (MC 屏幕坐标)。GUI rotation [30,225,0] 后:
-      sx = (x - z) * cos(45)
-      sy = -(y * cos(30) - ((x + z) / sqrt2) * sin(30))   # y 轴取反 (MC 屏幕向下)"""
-    sx = (p[0] - p[2]) * math.cos(math.radians(45))
-    sy = -(p[1] * math.cos(math.radians(30)) - ((p[0] + p[2]) / math.sqrt(2)) * math.sin(math.radians(30)))
+    """MC GUI 等轴测正交投影, camera rotation [30,225,0]:
+    屏幕 x 向右, y 向下 (MC 屏幕坐标)。225° yaw 让相机从 north(-Z) 侧看,
+    看到模型正面 (家具正面画在 north 面) 与 east(+X) 侧面:
+      sx = (x + z) * cos(45)
+      sy = -(y * cos(30) - ((x - z) / sqrt2) * sin(30))   # y 轴取反 (MC 屏幕向下)"""
+    sx = (p[0] + p[2]) * math.cos(math.radians(45))
+    sy = -(p[1] * math.cos(math.radians(30)) - ((p[0] - p[2]) / math.sqrt(2)) * math.sin(math.radians(30)))
     return (sx, sy)
 
 

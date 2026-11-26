@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from itertools import product
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,15 @@ ITEM_ICON_MANIFEST = "item_icons_manifest.json"
 TRANSFORM_CARRIER_MODELS = frozenset({"minecraft:block/block"})
 TARGET_BLOCK_SIZE = 16.0
 MAX_PROJECTED_ICON_PIXELS = 15.74
+GUI_ICON_TARGET_PX = 15.7
+"""Visible long edge of a GUI icon in slot pixels (16px slot).
+
+This is the measured size of a vanilla full block / furnace GUI icon: the
+[30,225,0] isometric projection of a 16x16x16 block at scale 0.625 spans
+~15.7px, i.e. it nearly touches the 16px slot edge. Fitting every proxy to
+that same visible long edge makes mod icons fill the slot the way vanilla
+block items do, instead of floating small inside it.
+"""
 
 
 def rotate_relative_to_vanilla_gui(point, rotation):
@@ -176,6 +186,129 @@ def normalize_to_block(model: dict[str, Any], target_size: float = TARGET_BLOCK_
         "normalization_bounds": bounds,
         "final_bounds": final_bounds,
         "target_size": target_size,
+    }
+
+
+def fit_gui_projection(model: dict[str, Any], texture_resolver,
+                       target_px: float = GUI_ICON_TARGET_PX):
+    """Fit an icon by its texture-visible GUI projection, not its 3D AABB.
+
+    ``normalize_to_block`` scales by the longest axis-aligned edge, but Minecraft
+    draws a 30-degree isometric projection. A flat parasol and a tall clock can
+    share an AABB edge and still render at wildly different sizes; an asymmetric
+    brazier can project well off-centre. This pass measures the alpha-visible
+    projection in the vanilla GUI camera, scales the geometry so its longest
+    visible edge reaches ``target_px`` slot pixels, then translates the geometry
+    so the visible centroid sits at slot centre. Geometry-space translation is
+    used rather than ``display.gui.translation`` because Minecraft applies that
+    translation *before* the GUI rotation: a y translation moves the icon up
+    less than its raw value, while x/z translations are rotated into the screen.
+
+    ``texture_resolver`` maps a texture reference to a PNG path; it is the same
+    resolver the preview and gates use, so the fit and the measurement agree.
+    """
+    from item_icon_preview import visible_projected_measurements
+
+    measured = visible_projected_measurements(
+        model, texture_resolver, pixels_per_unit=16)
+    if measured is None:
+        return None
+    bounds = measured["bounds"]
+    longest = max(bounds[2] - bounds[0], bounds[3] - bounds[1])
+    if longest <= 1e-8:
+        return None
+
+    # The projected size is measured before GUI scale (0.625), so convert the
+    # target slot pixels back into projected model units.
+    gui_scale = float(VANILLA_BLOCK_GUI["scale"][0])
+    target_units = target_px / gui_scale
+    # Unlike normalize_to_block, this pass sizes by what is actually visible:
+    # every icon, flat or tall, lands on the same visible long edge so the slot
+    # reads consistently. The geometry is checked against the model-format bounds
+    # after scaling and stepped back if the fitted shape would overflow them.
+    scale = target_units / longest
+
+    fitted = copy.deepcopy(model)
+    def scale_point(point):
+        return [round(8.0 + (value - 8.0) * scale, 6) for value in point]
+    def transform_element(element, transform):
+        for key in ("from", "to", "origin"):
+            if key in element:
+                element[key] = transform(element[key])
+        rotation = element.get("rotation")
+        if isinstance(rotation, dict) and "origin" in rotation:
+            rotation["origin"] = transform(rotation["origin"])
+    for element in fitted.get("elements", []):
+        transform_element(element, scale_point)
+
+    after_scale = visible_projected_measurements(
+        fitted, texture_resolver, pixels_per_unit=16)
+    if after_scale is None:
+        return None
+    bounds = after_scale["bounds"]
+    centre_x = (bounds[0] + bounds[2]) * 0.5
+    centre_y = (bounds[1] + bounds[3]) * 0.5
+
+    # Undo the GUI projection of a centred offset. Camera [30,225,0] projects
+    # sx = cos45*(x+z), sy = -(cos30*y - sin30*(x-z)/sqrt2). Choosing dx=dz
+    # cancels x-z in sy (so the sin30 term is unchanged) and adds 2*dx along
+    # x+z in sx: dx=dz=-cx/(2cos45) zeroes sx, dy=cy/cos30 zeroes sy.
+    cos45 = math.cos(math.radians(45.0))
+    cos30 = math.cos(math.radians(30.0))
+    dx = -centre_x / (2.0 * cos45)
+    dz = dx
+    dy = centre_y / cos30
+
+    def recenter_point(point):
+        return [round(point[0] + dx, 6),
+                round(point[1] + dy, 6),
+                round(point[2] + dz, 6)]
+    for element in fitted.get("elements", []):
+        transform_element(element, recenter_point)
+
+    fitted.setdefault("display", {})["gui"] = copy.deepcopy(VANILLA_BLOCK_GUI)
+    final = visible_projected_measurements(
+        fitted, texture_resolver, pixels_per_unit=16)
+    if final is None:
+        return None
+
+    # Rasterisation rounds the recentred silhouette to whole texels, so a
+    # perfectly solved centre can measure ~0.1px off. One correction pass with
+    # the residual removes that bias. Use the visible-alpha bounding-box centre
+    # here, the same measure the first pass used, so both passes agree on what
+    # "centred" means; the alpha-weighted centre would fight it on asymmetric
+    # shapes (a lamp with a heavy base and a thin stem, for example).
+    final_box = final["bounds"]
+    residual_x = (final_box[0] + final_box[2]) * 0.5
+    residual_y = (final_box[1] + final_box[3]) * 0.5
+    if abs(residual_x) > 1e-4 or abs(residual_y) > 1e-4:
+        rx = -residual_x / (2.0 * cos45)
+        rz = rx
+        ry = residual_y / cos30
+        def refine(point):
+            return [round(point[0] + rx, 6),
+                    round(point[1] + ry, 6),
+                    round(point[2] + rz, 6)]
+        for element in fitted.get("elements", []):
+            transform_element(element, refine)
+        final = visible_projected_measurements(
+            fitted, texture_resolver, pixels_per_unit=16)
+        if final is None:
+            return None
+
+    final_bounds = geometry_bounds(fitted)
+    if final_bounds is None:
+        return None
+    return {
+        "model": fitted,
+        "fit_scale": scale,
+        "fit_source_bounds": tuple(round(value, 6) for value in bounds),
+        "fit_final_bounds": tuple(round(value, 6) for value in final_bounds),
+        "fit_projected_bounds": tuple(round(value, 6) for value in final["bounds"]),
+        "fit_projected_size": (
+            round((final["bounds"][2] - final["bounds"][0]) * gui_scale, 4),
+            round((final["bounds"][3] - final["bounds"][1]) * gui_scale, 4)),
+        "fit_center": tuple(round(value * gui_scale, 4) for value in final["center"]),
     }
 
 

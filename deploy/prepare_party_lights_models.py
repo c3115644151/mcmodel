@@ -218,19 +218,27 @@ def frosted(image: Image.Image, alpha: int = SHELL_ALPHA) -> Image.Image:
 
 
 def write_textures(data: dict) -> None:
-    """Unlit is one static frame; lit is the artist's whole animated strip. Only the shell's alpha moves."""
+    """Both states are static frames: a placed lamp only changes look when its block state changes.
+
+    The artist's 32x128 strip animates in Blockbench, but one shared texture animation would make every
+    hung lamp and every placed lamp breathe in lockstep with no per-lamp phase, and - critically - a
+    STEADY lamp kept flickering even though its light level never moved. Brightness belongs to the
+    block state (the `lit` property); the texture just draws the matching frame. Both sheets are now
+    32x32 with no .mcmeta, so `lit=true` is genuinely steady.
+    """
     for part in ("core", "shell"):
         unlit = frame_image(data, "unlit")
-        lit = sheet_image(data, 0)
+        lit = frame_image(data, "lit")
         if part == "shell" and SHELL_ALPHA < 255:
             unlit, lit = frosted(unlit), frosted(lit)
         write_sheet(unlit, f"party_lights_{part}_unlit", animated=False)
-        write_sheet(lit, f"party_lights_{part}_lit", animated=True)
-    # The item copy owns a third shell sheet: same strip, translucent texels, so its quads land on the
-    # blended item sheet instead of the cutout one (see ITEM_SHELL_ALPHA).
-    write_sheet(frosted(sheet_image(data, 0), ITEM_SHELL_ALPHA), "party_lights_shell_item", animated=True)
-    print("wrote textures/block/party_lights_{core,shell}_{unlit,lit}.png (unlit 32x32 static frame 0, "
-          "lit the artist's 32x128 strip with frametime 6, "
+        write_sheet(lit, f"party_lights_{part}_lit", animated=False)
+    # The item copy owns a third shell sheet: the same lit frame with translucent texels, so its quads
+    # land on the blended item sheet instead of the cutout one (see ITEM_SHELL_ALPHA).
+    write_sheet(frosted(frame_image(data, "lit"), ITEM_SHELL_ALPHA),
+                "party_lights_shell_item", animated=False)
+    print("wrote textures/block/party_lights_{core,shell}_{unlit,lit}.png (both 32x32 static frames, "
+          "no animation: unlit frame 0, lit frame 2; "
           f"shell texels at alpha {SHELL_ALPHA}, core untouched at 255) plus "
           f"party_lights_shell_item.png at alpha {ITEM_SHELL_ALPHA}; the break tile is the build's, "
           "see normalize_block_model_particles.py")

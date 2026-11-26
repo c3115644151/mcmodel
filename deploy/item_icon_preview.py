@@ -7,6 +7,7 @@ the visible pixel envelope so transparent texture padding does not dominate icon
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Callable
 
@@ -26,6 +27,48 @@ FACE_VERTICES = {
     "west": ((0, 1, 0), (0, 0, 0), (0, 0, 1), (0, 1, 1)),
     "east": ((1, 1, 1), (1, 0, 1), (1, 0, 0), (1, 1, 0)),
 }
+
+
+# project_iso 的视点不变方向（display 空间）。相机从 (+x,+y,+z) 看向模型，
+# 法线与它点乘为正的面朝相机、是正面；为负的是背面。Minecraft 方块模型做
+# 背面剔除，离线预览必须一致，否则：负尺寸灯罩（from>to，绕序翻转、法线朝内）
+# 会被画成实心块，背面也会盖住正面细节。
+GUI_VIEW_DIR = (1.0, math.sqrt(2.0) * math.tan(math.radians(30.0)), -1.0)
+
+# Minecraft 的镂空/半透明纹理走 ALPHA_CUTOUT 0.5：alpha>=128 的像素完全
+# 显示、其余完全丢弃，没有平滑过渡。预览若做 alpha 混合，会在地毯/灯罩边缘
+# 混出白色半透明锯齿，和游戏里的硬边不一致。
+ALPHA_CUTOUT = 128
+
+
+def apply_alpha_cutout(image: Image.Image) -> Image.Image:
+    """把纹理面的 alpha 硬裁成 0 或 255，模拟 ALPHA_CUTOUT 0.5。"""
+    alpha = image.getchannel("A").point(lambda value: 255 if value >= ALPHA_CUTOUT else 0)
+    image.putalpha(alpha)
+    return image
+
+
+def _face_outward_normal(element: dict, face_name: str):
+    """面的绕序法线（模型空间）。负尺寸 cube 绕序翻转，法线自然朝内，
+    这正是 Minecraft 实现「内面可见」镂空灯罩的机制。"""
+    pts = _element_points(element, face_name)
+    a, b, c = pts[0], pts[1], pts[2]
+    ux, uy, uz = (b[i] - a[i] for i in range(3))
+    vx, vy, vz = (c[i] - a[i] for i in range(3))
+    nx, ny, nz = (uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx)
+    mag = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if mag < 1e-9:
+        return None
+    return (nx / mag, ny / mag, nz / mag)
+
+
+def face_is_front_facing(element: dict, face_name: str, gui_rotation) -> bool:
+    """按 Minecraft 的背面剔除规则判断这个面在 GUI 相机下是否可见。"""
+    normal = _face_outward_normal(element, face_name)
+    if normal is None:
+        return True
+    rotated = rotate_for_display(normal, gui_rotation)
+    return sum(rotated[i] * GUI_VIEW_DIR[i] for i in range(3)) > 1e-6
 
 
 def load_sprite(path: Path, frame: int = 0) -> Image.Image | None:
@@ -141,14 +184,14 @@ def _project_view(point, view: str, camera_distance: float = 48.0):
         return (z, -y), x
     if view == "top":
         return (x, -z), y
-    return project_iso((x, y, z)), x * 0.612372 + y * 0.5 + z * 0.612372
+    return project_iso((x, y, z)), x * 0.612372 + y * 0.5 - z * 0.612372
 
 
 def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | None],
                          gui_scale: tuple[float, float, float] = (0.625, 0.625, 0.625),
                          gui_rotation: tuple[float, float, float] = (30.0, 225.0, 0.0),
                          size: int = 64, view: str = "isometric",
-                         depth_buffer: bool = False,
+                         depth_buffer: bool | None = None,
                          pixels_per_unit: float | None = None,
                          projection_offset: tuple[float, float] = (0.0, 0.0),
                          camera_distance: float = 48.0) -> Image.Image:
@@ -163,6 +206,13 @@ def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | 
     for element in model.get("elements", []):
         for face_name, face in element.get("faces", {}).items():
             if face_name not in FACE_VERTICES or not isinstance(face, dict):
+                continue
+            # Minecraft 做背面剔除；负尺寸 cube 的绕序翻转让内面成为正面。
+            # 不剔除会把镂空灯罩画成实心块、让背面盖住正面细节。
+            # 只在 GUI 等轴测视图剔除：GUI_VIEW_DIR 是该相机特有的视向，
+            # front/side/top 等正交视图用于公告板/碰撞预览，相机方向不同，
+            # 不能套用，否则会把那些视图的正面误剔除。
+            if view == "isometric" and not face_is_front_facing(element, face_name, gui_rotation):
                 continue
             points = [rotate_for_display(point, gui_rotation)
                       for point in _element_points(element, face_name)]
@@ -186,10 +236,19 @@ def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | 
                     uv_points.append((u * texture.width / 16.0, v * texture.height / 16.0))
             quads.append((depth, face_name, projected, texture, uv_points, depths))
 
+    # GUI 等轴测默认走逐像素 z-buffer：Minecraft 用深度缓冲决定遮挡，与 quad
+    # 顺序无关；painter/元素顺序都无法同时正确处理所有模型（床要元素顺序、
+    # 彩灯要深度顺序）。其它正交视图（公告板/碰撞预览）有 art-directed 叠放
+    # 语义，保留 painter 深度排序。numpy 缺失时自动回退 painter。
+    if depth_buffer is None:
+        depth_buffer = view == "isometric"
     if depth_buffer:
+        # pixels_per_unit 默认 None 在这里解析；painter 路径也会再次解析，
+        # 但 z-buffer 路径在调用前就要用到它，不能把 None 传进去。
+        ppm = pixels_per_unit or (size / 16.0)
         try:
             return _render_projected_depth_buffer(quads, size, face_shade, view,
-                                                  pixels_per_unit, projection_offset)
+                                                  ppm, projection_offset)
         except ModuleNotFoundError as error:
             if error.name != "numpy":
                 raise
@@ -199,15 +258,16 @@ def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | 
 
     output = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     pixels_per_unit = pixels_per_unit or (size / 16.0)
-    # Back-to-front painter's order approximates the depth buffer for furniture
-    # cuboids while remaining deterministic and cheap for 16px item assets.
-    # Depth is positive into the scene for the front/side orthographic cameras,
-    # so their far planes must be painted first. Isometric and top views use the
-    # opposite ordering. Reusing one ascending painter order made front-facing
-    # paper decals disappear behind the bulletin-board backing.
-    reverse_depth = view in ("front", "side", "perspective_front")
-    for _depth, face_name, projected, texture, uv_points, _vertex_depths in sorted(
-            quads, key=lambda item: item[0], reverse=reverse_depth):
+    # Minecraft 的方块模型没有逐 quad 深度排序：同一 render type 内就是按
+    # 元素（再按面）的声明顺序绘制，后画的盖住先画的。GUI 等轴测必须照此，
+    # 否则按深度排序会让白色床垫盖住床的绿色被子（实测），与游戏内不符。
+    # quads 已经按元素顺序 append，所以等轴测视图直接按插入顺序绘制即可。
+    # front/side/top 是公告板/碰撞预览用的正交视图，仍按深度排序让贴纸类
+    # 前层可见。
+    if view != "isometric":
+        reverse_depth = view in ("front", "side", "perspective_front")
+        quads = sorted(quads, key=lambda item: item[0], reverse=reverse_depth)
+    for _depth, face_name, projected, texture, uv_points, _vertex_depths in quads:
         destination = [(size / 2 + (x + projection_offset[0]) * pixels_per_unit,
                         size / 2 + (y + projection_offset[1]) * pixels_per_unit) for x, y in projected]
         left = max(0, int(min(p[0] for p in destination)) - 1)
@@ -226,6 +286,7 @@ def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | 
             face_image = texture.transform(mask.size, Image.Transform.PERSPECTIVE, coeff,
                                            resample=Image.Resampling.NEAREST)
             face_image.putalpha(ImageChops.multiply(face_image.getchannel("A"), mask))
+            apply_alpha_cutout(face_image)
         else:
             color = (160, 160, 160, 255)
             face_image = Image.new("RGBA", mask.size, color)
@@ -251,6 +312,11 @@ def _render_projected_depth_buffer(quads, size: int, face_shade: dict[str, float
 
     output = np.zeros((size, size, 4), dtype=np.uint8)
     z_buffer = np.full((size, size), np.inf, dtype=np.float64)
+    # 正交投影（本项目所有视图都是正交）下深度沿屏幕线性变化，直接按重心
+    # 坐标插值 depth；逆深度插值是透视投影才用的，套在正交上会让平面 quad
+    # 的深度非线性，相交处互相撕出破洞。
+    keep_max = view in ("top", "isometric")  # 这些视图 depth 越大越靠近相机
+    depth_init = -np.inf if keep_max else np.inf
 
     for _average_depth, face_name, projected, texture, uv_points, vertex_depths in quads:
         destination = [(size / 2 + (x + projection_offset[0]) * pixels_per_unit,
@@ -271,6 +337,7 @@ def _render_projected_depth_buffer(quads, size: int, face_shade: dict[str, float
             face_image = texture.transform(mask.size, Image.Transform.PERSPECTIVE, coeff,
                                            resample=Image.Resampling.NEAREST)
             face_image.putalpha(ImageChops.multiply(face_image.getchannel("A"), mask))
+            apply_alpha_cutout(face_image)
         else:
             face_image = Image.new("RGBA", mask.size, (160, 160, 160, 255))
             face_image.putalpha(mask)
@@ -286,30 +353,25 @@ def _render_projected_depth_buffer(quads, size: int, face_shade: dict[str, float
 
         grid_x, grid_y = np.meshgrid(np.arange(left, right) + 0.5,
                                      np.arange(top, bottom) + 0.5)
-        depth_map = np.full((bottom - top, right - left), np.inf, dtype=np.float64)
-        # Triangulating the quad gives perspective-correct inverse-depth
-        # interpolation for every covered pixel. The image-space UV transform
-        # above is a homography, matching the same planar projection.
+        depth_map = np.full((bottom - top, right - left), depth_init, dtype=np.float64)
+        # 两个三角形覆盖 quad，对每个像素线性插值深度。
         for triangle in ((0, 1, 2), (0, 2, 3)):
             points = [destination[index] for index in triangle]
             depths = [float(vertex_depths[index]) for index in triangle]
             (x0, y0), (x1, y1), (x2, y2) = points
             denominator = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2)
-            if abs(denominator) < 1e-10 or any(abs(value) < 1e-10 for value in depths):
+            if abs(denominator) < 1e-10:
                 continue
             w0 = ((y1 - y2) * (grid_x - x2) + (x2 - x1) * (grid_y - y2)) / denominator
             w1 = ((y2 - y0) * (grid_x - x2) + (x0 - x2) * (grid_y - y2)) / denominator
             w2 = 1.0 - w0 - w1
             inside = (w0 >= -1e-7) & (w1 >= -1e-7) & (w2 >= -1e-7)
-            inverse_depth = w0 / depths[0] + w1 / depths[1] + w2 / depths[2]
-            triangle_depth = np.divide(1.0, inverse_depth, out=np.full_like(inverse_depth, np.inf),
-                                       where=np.abs(inverse_depth) > 1e-12)
-            triangle_depth[~inside] = np.inf
-            depth_map = np.minimum(depth_map, triangle_depth)
+            triangle_depth = w0 * depths[0] + w1 * depths[1] + w2 * depths[2]
+            triangle_depth[~inside] = depth_init
+            depth_map = np.maximum(depth_map, triangle_depth) if keep_max else np.minimum(depth_map, triangle_depth)
 
-        # Orthographic top/iso projectors use larger depth values toward the
-        # camera; turn those into a consistent smaller-is-nearer depth metric.
-        compare_depth = -depth_map if view in ("top", "isometric") else depth_map
+        # 归一成"越小越近"，配合 z_buffer 初始 inf 与 `<` 比较。
+        compare_depth = -depth_map if keep_max else depth_map
         region_depth = z_buffer[top:bottom, left:right]
         alpha = source[:, :, 3].astype(np.float64) / 255.0
         closer = (compare_depth < region_depth) & (alpha > 0.0)
@@ -339,6 +401,11 @@ def visible_projected_measurements(model: dict, texture_resolver: Callable[[str]
             if face_name not in FACE_VERTICES or not isinstance(face, dict):
                 continue
             gui_rotation = model.get("display", {}).get("gui", {}).get("rotation", (30.0, 225.0, 0.0))
+            # visible_projected_measurements 固定测 GUI 相机下的可见像素，
+            # 必须与 Minecraft 一样剔除背面，否则背面（以及负尺寸灯罩被误
+            # 当成实心块）会污染 fit 的尺寸与居中测量。
+            if not face_is_front_facing(element, face_name, gui_rotation):
+                continue
             points = [rotate_for_display(point, gui_rotation)
                       for point in _element_points(element, face_name)]
             projected = [project_iso((point[0] - 8.0, point[1] - 8.0, point[2] - 8.0))
@@ -392,6 +459,9 @@ def visible_projected_measurements(model: dict, texture_resolver: Callable[[str]
             warped = texture.transform((right - left, bottom - top), Image.Transform.PERSPECTIVE,
                                        coeff, resample=Image.Resampling.NEAREST)
             face_alpha = ImageChops.multiply(warped.getchannel("A"), face_mask)
+            # 与渲染路径一致：半透明 texel 在 alpha<128 时完全不可见，
+            # 不能把它们算进图标的可视边界（否则 fit 会按透明边算尺寸）。
+            face_alpha = face_alpha.point(lambda value: 255 if value >= ALPHA_CUTOUT else 0)
         alpha_union.paste(ImageChops.lighter(alpha_union.crop((left, top, right, bottom)), face_alpha), (left, top))
 
     bbox = alpha_union.getbbox()
@@ -401,7 +471,7 @@ def visible_projected_measurements(model: dict, texture_resolver: Callable[[str]
     total_alpha = 0
     weighted_x = 0.0
     weighted_y = 0.0
-    for index, alpha in enumerate(alpha_crop.getdata()):
+    for index, alpha in enumerate(alpha_crop.get_flattened_data()):
         if alpha:
             px = index % alpha_crop.width
             py = index // alpha_crop.width

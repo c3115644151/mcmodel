@@ -33,6 +33,7 @@ from item_icon_proxy import (
     TRANSFORM_CARRIER_MODELS,
     VANILLA_BLOCK_GUI,
     collect_model_ids,
+    fit_gui_projection,
     geometry_bounds,
     normalize_to_block,
     replace_gui_case_model_ids,
@@ -259,10 +260,25 @@ def main() -> int:
             if not normalized:
                 continue
             proxy = normalized["model"]
+            # normalize_to_block puts every source into the same 3D one-block
+            # space; fit_gui_projection then corrects for what the 30-degree GUI
+            # camera actually shows (flat, tall and asymmetric shapes all differ
+            # from their AABB). A shape that cannot be fitted is skipped instead
+            # of shipping a known-bad icon.
+            fitted = fit_gui_projection(proxy, lambda ref: resolve_texture(root, ref))
+            if not fitted:
+                report.append({"item": item_id, "status": "skipped_gui_fit", "models": [source_id]})
+                continue
+            proxy = fitted["model"]
+            normalized["gui_fit"] = fitted
             proxy["parent"] = source_id
             proxy_path = assets_root / "models" / "item_icons" / item_id / f"variant_{variant_index}.json"
             replacements[referenced_id] = proxy_model_id
             normalized_variants.append((proxy_path, proxy, normalized, source_id, proxy_model_id))
+
+        if not normalized_variants:
+            report.append({"item": item_id, "status": "skipped_gui_fit_all", "models": model_ids})
+            continue
 
         # Measure the visible, textured projection for every GUI state as one
         # item family. Variants can normalize to different scales, since a
