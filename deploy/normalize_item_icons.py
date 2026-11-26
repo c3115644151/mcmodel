@@ -29,12 +29,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import resolve
 from item_icon_proxy import (
+    GUI_ICON_TARGET_PX,
     ITEM_ICON_MANIFEST,
     TRANSFORM_CARRIER_MODELS,
     VANILLA_BLOCK_GUI,
     collect_model_ids,
     fit_gui_projection,
     geometry_bounds,
+    gui_icon_target_px,
     normalize_to_block,
     replace_gui_case_model_ids,
     replace_model_ids,
@@ -103,7 +105,24 @@ def resolve_texture(root: Path, texture_id: str) -> Path | None:
     if "/" not in relative:
         return None
     texture_type, name = relative.split("/", 1)
-    return root / "src/main/resources/assets" / namespace / "textures" / texture_type / f"{name}.png"
+    direct = root / "src/main/resources/assets" / namespace / "textures" / texture_type / f"{name}.png"
+    if direct.is_file():
+        return direct
+    # Vanilla textures are NOT copied into src/main/resources; NeoGradle unpacks
+    # them into build/neoForm/<step>/steps/transformSource/transformed/assets.
+    # Without this fallback a composite GUI layer that references e.g.
+    # minecraft:block/water_still (water in a barrel) has no texture and renders
+    # as a flat grey block in the offline preview.
+    if namespace == "minecraft":
+        transformed_root = root / "build" / "neoForm"
+        if transformed_root.is_dir():
+            for step in sorted(transformed_root.iterdir()):
+                candidate = (step / "steps" / "transformSource" / "transformed"
+                             / "assets" / "minecraft" / "textures"
+                             / texture_type / f"{name}.png")
+                if candidate.is_file():
+                    return candidate
+    return None
 
 
 def load_model_with_parent(path: Path, assets_root: Path, mod_id: str, visited=None) -> dict | None:
@@ -247,7 +266,10 @@ def main() -> int:
         if shared_bounds is None:
             report.append({"item": item_id, "status": "skipped_no_geometry", "models": model_ids})
             continue
-
+        # 该 item 的原始最长 AABB 边(游戏单位)决定它的真实尺寸档位：
+        # >=1 格贴满原版边缘，<1 格按真实比例缩小，不被 inflate 到满格。
+        source_longest = max(shared_bounds[i + 3] - shared_bounds[i] for i in range(3))
+        item_target_px = gui_icon_target_px(source_longest)
         source_gui, gui_is_explicit, gui_source = (
             deepcopy(VANILLA_BLOCK_GUI), False, "vanilla_block_gui")
         replacements = {}
@@ -265,10 +287,26 @@ def main() -> int:
             # camera actually shows (flat, tall and asymmetric shapes all differ
             # from their AABB). A shape that cannot be fitted is skipped instead
             # of shipping a known-bad icon.
-            fitted = fit_gui_projection(proxy, lambda ref: resolve_texture(root, ref))
-            if not fitted:
+            # 先居中 fit 一次，量出图标在槽里真正占的可见高度。没占满上下边缘的
+            # 模型(矮物件、宽扁伞面、床头等)悬在槽中会显得突兀，按原版地毯的
+            # 做法把可见下边缘贴到槽底。判据用渲染后的投影高度，不用源模型尺寸
+            # ——遮阳伞源高18u但投影只有8.8px，正是后一种判据才抓得住。
+            centred = fit_gui_projection(proxy, lambda ref: resolve_texture(root, ref),
+                                         target_px=item_target_px, floor_anchor=False)
+            if not centred:
                 report.append({"item": item_id, "status": "skipped_gui_fit", "models": [source_id]})
                 continue
+            # 关心的是屏幕竖直方向占槽多少(fit_projected_size[1]), 不是长边——
+            # 遮阳伞的宽度被 fit 到 15.7px, 但投影高度只有 8.8px。
+            proj_h = centred["fit_projected_size"][1]
+            floor_anchor = proj_h < GUI_ICON_TARGET_PX * 0.95
+            if floor_anchor:
+                fitted = fit_gui_projection(proxy, lambda ref: resolve_texture(root, ref),
+                                            target_px=item_target_px, floor_anchor=True)
+                if not fitted:
+                    fitted = centred
+            else:
+                fitted = centred
             proxy = fitted["model"]
             normalized["gui_fit"] = fitted
             proxy["parent"] = source_id
@@ -316,6 +354,10 @@ def main() -> int:
                 "gui_source": gui_source,
                 "source_bounds": [round(v, 4) for v in normalized["source_bounds"]],
                 "normalized_bounds": [round(v, 4) for v in normalized["final_bounds"]],
+                "source_longest": round(source_longest, 4),
+                "source_height": round(shared_bounds[4] - shared_bounds[1], 4),
+                "gui_target_px": item_target_px,
+                "floor_anchor": floor_anchor,
             })
 
         if not replacements:
@@ -357,6 +399,10 @@ def main() -> int:
             "gui_source": gui_source,
             "authored_gui_transform": gui_is_explicit,
             "proxies": owned_ids,
+            "source_longest": round(source_longest, 4),
+            "source_height": round(shared_bounds[4] - shared_bounds[1], 4),
+            "gui_target_px": item_target_px,
+            "floor_anchor": floor_anchor,
         }
 
     if args.apply:

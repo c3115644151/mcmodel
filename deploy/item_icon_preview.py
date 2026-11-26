@@ -105,6 +105,33 @@ def load_sprite(path: Path, frame: int = 0) -> Image.Image | None:
     return sprite.crop((0, chosen * height, sprite.width, (chosen + 1) * height))
 
 
+def tinted_water_sprite(texture: Image.Image | None, texture_ref: str | None) -> Image.Image | None:
+    """Apply the vanilla biome water tint to a grey water sprite.
+
+    Minecraft's water_still / flowing sprites are grey in the texture atlas and
+    get their blue colour from a per-biome colour multiplier at render time.
+    The offline preview has no biome, so without this the water in a barrel or
+    well renders as a flat grey/white block instead of the blue players see in
+    game. Use the overworld river/ocean water colour.
+    """
+    if texture is None or not texture_ref:
+        return texture
+    ref = texture_ref.lower()
+    if "water_still" not in ref and "water_flow" not in ref and "wishing_well_water" not in ref:
+        return texture
+    # 0x3F76E4 is vanilla overworld water; keep the sprite's own luminance so
+    # surface highlights/still-water shading survive the tint.
+    tint = (0x3F, 0x76, 0xE4)
+    src = list(texture.get_flattened_data())
+    out = []
+    for r, g, b, a in src:
+        lum = (r + g + b) / 3.0 / 255.0
+        out.append((int(tint[0] * lum), int(tint[1] * lum), int(tint[2] * lum), a))
+    result = Image.new("RGBA", texture.size)
+    result.putdata(out)
+    return result
+
+
 def resolve_texture_reference(model: dict, reference: str) -> str | None:
     textures = model.get("textures", {})
     visited = set()
@@ -225,6 +252,7 @@ def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | 
             texture_ref = resolve_texture_reference(model, str(face.get("texture", "")))
             texture_path = texture_resolver(texture_ref) if texture_ref else None
             texture = load_sprite(texture_path) if texture_path else None
+            texture = tinted_water_sprite(texture, texture_ref)
             uv_points = None
             if uv and texture:
                 rotation = (int(face.get("rotation", 0)) // 90) % 4
@@ -415,6 +443,7 @@ def visible_projected_measurements(model: dict, texture_resolver: Callable[[str]
             texture_ref = resolve_texture_reference(model, str(face.get("texture", "")))
             texture_path = texture_resolver(texture_ref) if texture_ref else None
             texture = load_sprite(texture_path) if texture_path else None
+            texture = tinted_water_sprite(texture, texture_ref)
             uv_points = None
             if uv and texture:
                 rotation = (int(face.get("rotation", 0)) // 90) % 4

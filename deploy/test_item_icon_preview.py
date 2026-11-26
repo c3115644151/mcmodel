@@ -4,7 +4,9 @@ from pathlib import Path
 
 from preview_item_icons import creative_tab_item_ids
 from item_icon_preview import (FACE_VERTICES, face_is_front_facing,
-                               apply_alpha_cutout)
+                               apply_alpha_cutout, tinted_water_sprite,
+                               load_sprite)
+from preview_item_icons import preview_model_ids
 from PIL import Image
 
 
@@ -60,6 +62,27 @@ class CreativeTabPreviewFilterTests(unittest.TestCase):
         img.putpixel((2, 0), (255, 255, 255, 255))
         out = apply_alpha_cutout(img)
         self.assertEqual([out.getpixel((i, 0))[3] for i in range(3)], [0, 255, 255])
+
+
+class WaterRenderingTests(unittest.TestCase):
+    def test_water_sprite_is_tinted_blue(self):
+        grey = Image.new("RGBA", (16, 16), (194, 194, 194, 180))
+        out = tinted_water_sprite(grey, "minecraft:block/water_still")
+        r, g, b, a = out.getpixel((0, 0))
+        self.assertGreater(b, g)
+        self.assertGreater(g, r)
+        self.assertEqual(a, 180)
+
+    def test_non_water_sprite_untouched(self):
+        stone = Image.new("RGBA", (16, 16), (128, 128, 128, 255))
+        out = tinted_water_sprite(stone, "minecraft:block/stone")
+        self.assertEqual(out.getpixel((0, 0)), (128, 128, 128, 255))
+
+    def test_component_select_preview_uses_single_fallback(self):
+        node = {"type": "minecraft:select", "property": "minecraft:component",
+                "cases": [{"when": 1, "model": {"type": "minecraft:model", "model": "ns:full"}}],
+                "fallback": {"type": "minecraft:model", "model": "ns:empty"}}
+        self.assertEqual(preview_model_ids(node), ["ns:empty"])
 
 
 if __name__ == "__main__":

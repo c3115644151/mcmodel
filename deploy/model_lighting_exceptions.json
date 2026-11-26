@@ -1,1 +1,11 @@
-{}
+{
+  "party_lights_unlit.json": {
+    "shade": false
+  },
+  "party_lights_lit.json": {
+    "shade": false
+  },
+  "party_lights_inventory.json": {
+    "shade": false
+  }
+}

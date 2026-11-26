@@ -95,6 +95,17 @@ for stage in ("unripe", "ripe"):
     assert all(float(element["to"][1]) <= 16.2 for element in icon_source["elements"]), \
         f"icon source for {stage} still carries the hanging strands"
 
+# The slot icon must show the ripe basket with its glowing berry strands, not the
+# bare unripe pot. Both icon sources carry single-cell geometry, so this is purely
+# an art-direction choice: the ripe source keeps the fruit that reads as the item.
+gui_proxy = read(ASSETS / "models/item_icons/glow_berry_basket/variant_0.json")
+assert gui_proxy["parent"] == "pastoral_home:block/glow_berry_basket_icon_ripe", \
+    "GUI proxy must source the ripe basket so the inventory icon keeps its berries"
+ripe_source = read(ASSETS / "models/block/glow_berry_basket_icon_ripe.json")
+unripe_source = read(ASSETS / "models/block/glow_berry_basket_icon_unripe.json")
+assert len(ripe_source["elements"]) > len(unripe_source["elements"]), \
+    "ripe icon source must carry more geometry than the bare unripe pot"
+
 block = (ROOT / "src/main/java/com/pastoralhome/block/GlowBerryBasketBlock.java").read_text(encoding="utf-8")
 assert "{{2.5,2.5}, {13.5,13.5}, {2.5,13.5}, {13.5,2.5}}" in block
 item_code = (ROOT / "src/main/java/com/pastoralhome/item/GlowBerryBasketItem.java").read_text(encoding="utf-8")

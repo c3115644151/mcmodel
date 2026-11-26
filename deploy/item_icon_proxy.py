@@ -28,14 +28,34 @@ TRANSFORM_CARRIER_MODELS = frozenset({"minecraft:block/block"})
 TARGET_BLOCK_SIZE = 16.0
 MAX_PROJECTED_ICON_PIXELS = 15.74
 GUI_ICON_TARGET_PX = 15.7
-"""Visible long edge of a GUI icon in slot pixels (16px slot).
+"""Visible long edge of a full-block GUI icon in slot pixels (16px slot).
 
 This is the measured size of a vanilla full block / furnace GUI icon: the
 [30,225,0] isometric projection of a 16x16x16 block at scale 0.625 spans
-~15.7px, i.e. it nearly touches the 16px slot edge. Fitting every proxy to
-that same visible long edge makes mod icons fill the slot the way vanilla
-block items do, instead of floating small inside it.
+~15.7px, i.e. it nearly touches the 16px slot edge. A block-sized model is
+fitted to this edge; a genuinely smaller model gets a proportional target
+via ``gui_icon_target_px`` so it is not inflated to a full slot.
 """
+# 满格方块经 GUI 相机投影后的可见下边缘(投影单位, 未乘 0.625 scale)。
+# 矮模型(<1格)贴底时把可见下边缘对齐到这里, 等于原版地毯的贴地表现。
+GUI_FLOOR_Y = 12.5625
+
+
+def gui_icon_target_px(source_longest: float) -> float:
+    """Honest GUI target: full vanilla edge for >=1 block, proportional below.
+
+    ``normalize_to_block`` inflates every model to a one-block AABB, so fitting
+    every proxy to the full 15.7px edge erased the real size difference between
+    a one-block wardrobe and a half-block teacup. The source model's original
+    longest AABB edge is its true size class in block units: a 5-unit teacup is
+    31% of a block and should read as ~31% of the vanilla icon edge. Above one
+    block we cap at 1.0 so multi-block models stay at the vanilla edge instead
+    of overflowing the slot.
+    """
+    if source_longest <= 0:
+        return GUI_ICON_TARGET_PX
+    ratio = min(1.0, source_longest / TARGET_BLOCK_SIZE)
+    return round(GUI_ICON_TARGET_PX * ratio, 4)
 
 
 def rotate_relative_to_vanilla_gui(point, rotation):
@@ -190,7 +210,8 @@ def normalize_to_block(model: dict[str, Any], target_size: float = TARGET_BLOCK_
 
 
 def fit_gui_projection(model: dict[str, Any], texture_resolver,
-                       target_px: float = GUI_ICON_TARGET_PX):
+                       target_px: float = GUI_ICON_TARGET_PX,
+                       floor_anchor: bool = False):
     """Fit an icon by its texture-visible GUI projection, not its 3D AABB.
 
     ``normalize_to_block`` scales by the longest axis-aligned edge, but Minecraft
@@ -206,6 +227,12 @@ def fit_gui_projection(model: dict[str, Any], texture_resolver,
 
     ``texture_resolver`` maps a texture reference to a PNG path; it is the same
     resolver the preview and gates use, so the fit and the measurement agree.
+
+    ``floor_anchor`` puts the visible bottom edge on the vanilla full-block
+    slot floor instead of the slot centre. Models shorter than one block do not
+    reach the slot's top/bottom edges, so like a vanilla carpet (modelled at
+    y=0..1 with no GUI translation) their icon should sit on the slot floor,
+    not float in the middle. Only the vertical target changes; x stays centred.
     """
     from item_icon_preview import visible_projected_measurements
 
@@ -257,7 +284,13 @@ def fit_gui_projection(model: dict[str, Any], texture_resolver,
     cos30 = math.cos(math.radians(30.0))
     dx = -centre_x / (2.0 * cos45)
     dz = dx
-    dy = centre_y / cos30
+    if floor_anchor:
+        # 矮模型贴地: 把可见下边缘(bounds[3], 屏幕 y 越大越靠下)移到满格
+        # 方块的槽底。sy = -(cos30*y - sin30*(x-z)/sqrt2), 屏幕下移 delta
+        # 需要 y 反向变化: dy = (bounds[3] - FLOOR_Y)/cos30。x 仍居中。
+        dy = (bounds[3] - GUI_FLOOR_Y) / cos30
+    else:
+        dy = centre_y / cos30
 
     def recenter_point(point):
         return [round(point[0] + dx, 6),
@@ -280,11 +313,14 @@ def fit_gui_projection(model: dict[str, Any], texture_resolver,
     # shapes (a lamp with a heavy base and a thin stem, for example).
     final_box = final["bounds"]
     residual_x = (final_box[0] + final_box[2]) * 0.5
-    residual_y = (final_box[1] + final_box[3]) * 0.5
+    if floor_anchor:
+        residual_y = final_box[3] - GUI_FLOOR_Y
+    else:
+        residual_y = (final_box[1] + final_box[3]) * 0.5
     if abs(residual_x) > 1e-4 or abs(residual_y) > 1e-4:
         rx = -residual_x / (2.0 * cos45)
         rz = rx
-        ry = residual_y / cos30
+        ry = -residual_y / cos30 if floor_anchor else residual_y / cos30
         def refine(point):
             return [round(point[0] + rx, 6),
                     round(point[1] + ry, 6),

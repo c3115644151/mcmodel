@@ -4,8 +4,10 @@ import unittest
 from pathlib import Path
 
 from item_icon_proxy import (
+    GUI_FLOOR_Y,
     GUI_ICON_TARGET_PX,
     VANILLA_BLOCK_GUI,
+    gui_icon_target_px,
     collect_model_ids,
     fit_gui_projection,
     geometry_bounds,
@@ -18,6 +20,19 @@ from item_icon_proxy import (
 
 
 class ItemIconProxyTests(unittest.TestCase):
+    ROOT = Path(__file__).resolve().parents[2]
+    ASSETS = ROOT / "src/main/resources/assets/pastoral_home"
+
+    def test_water_barrel_icon_uses_lidded_source_not_open_barrel(self):
+        # The GUI icon shows a closed barrel: the open variant is only used in
+        # world/blockstate for the fluid states. Using the open source in the icon
+        # proxy drops the lid and makes the slot look like an empty broken barrel.
+        proxy = json.loads((self.ASSETS / "models/item_icons/water_barrel/variant_0.json").read_text(encoding="utf-8"))
+        self.assertEqual(proxy["parent"], "pastoral_home:block/water_barrel")
+        lidded = json.loads((self.ASSETS / "models/block/water_barrel.json").read_text(encoding="utf-8"))
+        opened = json.loads((self.ASSETS / "models/block/water_barrel_open.json").read_text(encoding="utf-8"))
+        self.assertGreater(len(lidded["elements"]), len(opened["elements"]))
+
     def test_one_block_model_keeps_authored_scale_and_uses_vanilla_gui(self):
         model = {"elements": [{"from": [0, 0, 0], "to": [16, 16, 16]}]}
         result = normalize_to_block(model)
@@ -92,6 +107,44 @@ class ItemIconProxyTests(unittest.TestCase):
         fitted_cube = fit_gui_projection(cube, lambda _ref: None)
         self.assertAlmostEqual(visible_long_edge(fitted_slab["model"]), GUI_ICON_TARGET_PX, delta=0.6)
         self.assertAlmostEqual(visible_long_edge(fitted_cube["model"]), GUI_ICON_TARGET_PX, delta=0.6)
+
+    def test_layered_target_full_block_and_smaller(self):
+        # >=1 block fits the full vanilla edge; below one block is proportional.
+        self.assertAlmostEqual(gui_icon_target_px(16.0), GUI_ICON_TARGET_PX)
+        self.assertAlmostEqual(gui_icon_target_px(48.0), GUI_ICON_TARGET_PX)  # multiblock capped
+        self.assertAlmostEqual(gui_icon_target_px(8.0), GUI_ICON_TARGET_PX * 0.5)
+        self.assertAlmostEqual(gui_icon_target_px(4.0), GUI_ICON_TARGET_PX * 0.25)
+
+    def test_gui_fit_honours_explicit_smaller_target(self):
+        from item_icon_preview import visible_projected_measurements
+        cube = {"elements": [self._box({"from": [0, 0, 0], "to": [16, 16, 16]})]}
+        small_target = GUI_ICON_TARGET_PX * 0.5
+        fitted = fit_gui_projection(cube, lambda _ref: None, target_px=small_target)
+        m = visible_projected_measurements(fitted["model"], lambda _ref: None, pixels_per_unit=16)
+        b = m["bounds"]
+        edge = max(b[2] - b[0], b[3] - b[1]) * VANILLA_BLOCK_GUI["scale"][0]
+        self.assertAlmostEqual(edge, small_target, delta=0.6)
+
+    def test_floor_anchor_puts_short_model_bottom_on_slot_floor(self):
+        from item_icon_preview import visible_projected_measurements
+        # 矮而宽的模型(高度2<16)贴底后,可见下边缘应等于满格方块槽底基准。
+        flat = {"elements": [self._box({"from": [0, 0, 0], "to": [16, 2, 16]})]}
+        fitted = fit_gui_projection(flat, lambda _ref: None,
+                                    target_px=GUI_ICON_TARGET_PX * 0.5, floor_anchor=True)
+        b = visible_projected_measurements(fitted["model"], lambda _ref: None,
+                                           pixels_per_unit=16)["bounds"]
+        self.assertAlmostEqual(b[3], GUI_FLOOR_Y, delta=0.3)
+        # 水平方向仍居中
+        self.assertLess(abs((b[0] + b[2]) * 0.5), 0.25)
+
+    def test_centre_fit_keeps_full_block_on_floor_and_centre(self):
+        from item_icon_preview import visible_projected_measurements
+        cube = {"elements": [self._box({"from": [0, 0, 0], "to": [16, 16, 16]})]}
+        fitted = fit_gui_projection(cube, lambda _ref: None)  # floor_anchor=False
+        b = visible_projected_measurements(fitted["model"], lambda _ref: None,
+                                           pixels_per_unit=16)["bounds"]
+        self.assertAlmostEqual(b[3], GUI_FLOOR_Y, delta=0.3)
+        self.assertLess(abs((b[1] + b[3]) * 0.5), 0.25)
 
     def test_gui_fit_centres_an_off_centre_shape(self):
         from item_icon_preview import visible_projected_measurements

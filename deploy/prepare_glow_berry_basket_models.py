@@ -106,7 +106,7 @@ def main():
             "property": "minecraft:display_context",
             "cases": [{"when": "gui",
                        "model": {"type": "minecraft:model",
-                                 "model": "pastoral_home:block/glow_berry_basket_icon_unripe"}}],
+                                 "model": "pastoral_home:block/glow_berry_basket_icon_ripe"}}],
             "fallback": {"type": "minecraft:model",
                          "model": "pastoral_home:block/glow_berry_basket_short_unripe"},
         }

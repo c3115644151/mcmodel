@@ -33,6 +33,12 @@ The shell sheet therefore ships the artist's texels unchanged (alpha 255); SHELL
 falsify that - it was the earlier workaround, kept reachable for comparison. Element order stays
 core, shell, hanger, and the hanger draws on the core sheet.
 
+Every element carries shade:false and light_emission:15 so the lamp renders at exactly the artist's
+texel colours: no face-orientation shading, no sky/block light or AO modulation (26.1.2
+VertexConsumer.putBlockBakedQuad reads the quad's lightEmission and forces the vertex lightmap to
+full bright). The placed block's outward glow stays lightLevel=12 - that lights the room, it does not
+tint the lamp. GUI/hand item proxies inherit both fields through deepcopy, so the icon matches too.
+
 Run: .venv/Scripts/python.exe tools/deploy/prepare_party_lights_models.py [--mirror]
 """
 from __future__ import annotations
@@ -199,6 +205,13 @@ def lamp_elements() -> list[dict]:
         painted = source_faces(artist[index])
         faces = {face: {"texture": "#" + PART_SHEET[name], "uv": uv} for face, uv in painted.items()}
         element = {"name": name, "from": low, "to": high, "faces": faces}
+        # Appearance must equal the artist's texels exactly, in every game lighting condition.
+        # shade:false removes the face-orientation darkening; light_emission:15 makes the vertex
+        # lightmap full bright regardless of sky/block light or AO (VertexConsumer.putBlockBakedQuad
+        # -> QuadInstance.getLightCoordsWithEmission -> LightCoordsUtil.lightCoordsWithEmission,
+        # 26.1.2 sources). The block's lightLevel=12 outward glow is separate and untouched.
+        element["shade"] = False
+        element["light_emission"] = 15
         if name == "shell":
             element["rotation"] = {"angle": 0.0, "axis": "y", "origin": [8.0, 8.0, 8.0]}
         out.append(element)

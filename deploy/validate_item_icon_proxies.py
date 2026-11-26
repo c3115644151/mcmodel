@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import resolve
 from item_icon_proxy import (
+    GUI_FLOOR_Y,
     GUI_ICON_TARGET_PX,
     ITEM_ICON_MANIFEST,
     TRANSFORM_CARRIER_MODELS,
@@ -106,18 +107,33 @@ def check_item(item_path: Path, entry: dict, assets: Path, mod_id: str, root: Pa
             width, height = final[2] - final[0], final[3] - final[1]
             if width > 16.0 or height > 16.0:
                 issues.append(f"{model_id}: visible projected icon exceeds 16px slot: {width:.2f}×{height:.2f}")
-            # Every proxy is fitted to a common visible long edge, so a shrunken
-            # or oversized icon is now a build failure rather than a screenshot
-            # surprise. The target has a 0.5px rasterisation tolerance.
+            # Per-item honest target: block-sized models fit the full vanilla
+            # edge; genuinely smaller models fit a proportional edge. The
+            # generator recorded the target in the manifest, so this gate uses
+            # the same number instead of forcing every icon to one size.
+            target_px = float(entry.get("gui_target_px", GUI_ICON_TARGET_PX))
             long_edge = max(width, height)
-            if abs(long_edge - GUI_ICON_TARGET_PX) > 0.5:
+            if abs(long_edge - target_px) > 0.5:
                 issues.append(
-                    f"{model_id}: visible long edge {long_edge:.2f}px is not fitted to {GUI_ICON_TARGET_PX}px")
+                    f"{model_id}: visible long edge {long_edge:.2f}px is not fitted to {target_px}px "
+                    f"(source {entry.get('source_longest', '?')}u)")
             centre_x = (final[0] + final[2]) * 0.5
-            centre_y = (final[1] + final[3]) * 0.5
-            if abs(centre_x) > 0.25 or abs(centre_y) > 0.25:
-                issues.append(
-                    f"{model_id}: visible icon centre ({centre_x:.2f},{centre_y:.2f}) is off the slot centre")
+            if abs(centre_x) > 0.25:
+                issues.append(f"{model_id}: visible icon centre x {centre_x:.2f} is off the slot centre")
+            if entry.get("floor_anchor"):
+                # 矮模型贴地: 可见下边缘应对齐满格方块的槽底。final 是槽像素
+                # (已乘 gui_scale), GUI_FLOOR_Y 是投影单位, 需乘同一 scale。
+                floor_px = GUI_FLOOR_Y * gui_scale[1]
+                bottom = final[3]
+                if abs(bottom - floor_px) > 0.4:
+                    issues.append(
+                        f"{model_id}: floor-anchored icon bottom {bottom:.2f}px is not on slot floor "
+                        f"{floor_px:.2f}px")
+            else:
+                centre_y = (final[1] + final[3]) * 0.5
+                if abs(centre_y) > 0.25:
+                    issues.append(
+                        f"{model_id}: visible icon centre y {centre_y:.2f} is off the slot centre")
         source = load_model_with_parent(path, assets / "models", mod_id)
         if not source or not source.get("elements"):
             issues.append(f"{model_id}: source geometry could not be resolved")
@@ -200,7 +216,8 @@ def main() -> int:
         print("ERROR: no generated GUI proxy item definitions were found")
         return 1
     print("All proxies inherit minecraft:block/block's GUI camera (rotation [30, 225, 0], no translation, scale 0.625), "
-          f"fit a {GUI_ICON_TARGET_PX}px visible long edge, and centre in the 16px GUI slot.")
+          f"fit their manifest target long edge (full block = {GUI_ICON_TARGET_PX}px, smaller models proportional), "
+          "and centre in the 16px GUI slot.")
     return 0
 
 

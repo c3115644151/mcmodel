@@ -189,6 +189,10 @@ def geometry_checks():
         order = [element.get("name") for element in model["elements"]]
         check(order == ELEMENT_ORDER,
               "geometry: " + name + " draws core, shell, then hanger " + str(order))
+        check(all(element.get("shade") is False and element.get("light_emission") == 15
+                  for element in model["elements"]),
+              "geometry: " + name + " every element is unshaded and full-bright so the lamp "
+              "shows the artist's texels in any game lighting")
         if sorted(blocks) != sorted(ELEMENT_ORDER):
             continue
         shell = blocks["shell"]
@@ -733,6 +737,19 @@ def rope_network_checks():
     check("if (!encoded.equals(this.entityData.get(DRIVE)))" in entity,
           "rope entity: writes the drive only when it changes, so a tick loop cannot spam the sync")
     check('output.putString("drive"' in entity, "rope entity: persists the drive with the rope")
+    # Real light: each bright hanging lamp gets an invisible vanilla light block, driven by the
+    # same layout() the renderer uses so the emitted light can never disagree with the appearance.
+    check("private void syncLightBlocks(ServerLevel level)" in entity
+          and "BridgeRopeLamps.layout(start, end, ts, this.lampMode()" in entity,
+          "rope light: the lit set comes from the same layout the client renderer draws")
+    check("if (!slot.lit()) continue;" in entity and "Blocks.LIGHT.defaultBlockState()" in entity
+          and "LightBlock.LEVEL" in entity,
+          "rope light: only bright lamps place a vanilla light block at the right level")
+    check("level.getBlockState(cell).isAir()" in entity,
+          "rope light: only air cells are lit, so supports and terrain are never overwritten")
+    check("this.syncLightBlocks(serverLevel)" in entity and "clearLightBlocks" in entity
+          and "onRemoval(Entity.RemovalReason reason)" in entity,
+          "rope light: the cord syncs every tick and clears its lights when removed")
     # Claiming and releasing the cord follows the same OFF/REMOTE rule as the block lamps.
     check("findRopes" in be and "driveRopes" in be,
           "controller entity: finds the cords tied to its own network and hands them the clock")
@@ -854,6 +871,25 @@ def player_and_chain_checks():
     lang = ROOT / "src/main/java/com/pastoralhome/data/ModLanguageProvider.java"
     check("addEntityType(ModEntities.BRIDGE_ROPE" in lang.read_text(encoding="utf-8"),
           "Jade: the rope entity has a display name, not the raw language key")
+    rope = (ROOT / "src/main/java/com/pastoralhome/entity/BridgeRopeEntity.java").read_text(encoding="utf-8")
+    pick = (ROOT / "src/main/java/com/pastoralhome/client/RopePickPolicy.java").read_text(encoding="utf-8")
+    check("removeLampUnderCrosshair" in rope and "lampBox(" in rope and ".clip(from, to)" in rope,
+          "rope: sneak-right-click ray-tests the aimed lamp body, not the whole cord")
+    check("? this.removeLampUnderCrosshair(serverLevel, player)" in rope
+          and ": this.cycleLampMode(serverLevel, player)" in rope,
+          "rope: empty right-click cycles the cord, sneak-right-click takes one lamp")
+    kb = rope.find("public void kill(ServerLevel level)")
+    check(kb >= 0 and "discard" not in rope[kb:kb + 120] and "spawnAtLocation" not in rope[kb:kb + 120],
+          "rope: kill() is a no-op so mob clearing cannot remove a tied cord")
+    check("player.getMainHandItem().isEmpty() && player.getOffhandItem().isEmpty()" in pick,
+          "rope: empty hands pick the cord without holding a lamp or sneaking")
+    lang_text = lang.read_text(encoding="utf-8")
+    check("bridge_rope.no_lamp_targeted" in lang_text and "bridge_rope.lamp_removed" in lang_text,
+          "rope: interaction feedback strings exist for aiming and removing")
+    gen_lang = ROOT / "src/generated/resources/assets/pastoral_home/lang/en_us.json"
+    if gen_lang.exists():
+        check("entity.pastoral_home.bridge_rope" in gen_lang.read_text(encoding="utf-8"),
+              "Jade: generated lang carries the rope entity name (datagen has been run)")
     be = CONTROLLER_BE.read_text(encoding="utf-8")
     check("members.count() == 0" not in be[be.find("private List<BridgeRopeEntity> findRopes"):
                                            be.find("private List<BridgeRopeEntity> findRopes") + 4000],

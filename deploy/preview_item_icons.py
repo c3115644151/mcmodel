@@ -15,12 +15,16 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-# 原版 GUI 槽位是 16x16 像素。预览把每个图标渲染到 ICON_CANVAS 的画布上，
-# 比例固定 ZOOM 倍，仅为便于观看；格子背景必须正好等于这个画布，否则格子
-# 会比图标代表的真实 slot 大一圈，看不出图标在真实格子里的占比。
-SLOT_PIXELS = 16
+# Minecraft 的 GUI 槽位(slot)是 18x18 游戏像素，中间的 16x16 才是图标绘制区，
+# 四周各 1px 是格子边框。预览以 ICON_ZOOM 倍放大：图标绘制在 ICON_CANVAS(64px)
+# 里，但玩家眼里的"格子"是含边框的 18px(SLOT_FRAME_CANVAS=72px)。格子框必须按
+# 18px 画、图标绘制区居中其中，才能还原游戏里图标相对格子的真实占比。
+SLOT_PIXELS = 16                        # 图标绘制区(游戏像素)
+SLOT_FRAME_PIXELS = 18                  # 完整格子含边框(游戏像素), MC 的 SLOT_SIZE
 ICON_ZOOM = 4
-ICON_CANVAS = SLOT_PIXELS * ICON_ZOOM   # 64px 画布 == 一个原版 16px slot
+ICON_CANVAS = SLOT_PIXELS * ICON_ZOOM          # 64px = 16px 图标绘制区
+SLOT_FRAME_CANVAS = SLOT_FRAME_PIXELS * ICON_ZOOM  # 72px = 18px 完整格子(含边框)
+ICON_INSET = (SLOT_FRAME_CANVAS - ICON_CANVAS) // 2  # 4px = 1px 边框 ×4
 CELL_PAD = 4                            # 格子外的留白，不属于格子本身
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
@@ -30,6 +34,22 @@ from item_icon_proxy import VANILLA_BLOCK_GUI, collect_model_ids
 from item_icon_preview import (project_gui_translation, render_projected_icon,
                                visible_projected_measurements)
 from normalize_item_icons import load_model_with_parent, resolve_model, resolve_texture
+
+
+def preview_model_ids(gui_node: dict) -> list[str]:
+    """Model ids to draw for a GUI icon.
+
+    A minecraft:component select (e.g. water_barrel's stored_amount) picks ONE
+    mutually exclusive state at render time. Drawing every case's ids stacked
+    paints all four water levels at once, covering the barrel in a blue slab.
+    With no live item component in an offline preview, the fallback is the
+    honest neutral state (an empty barrel).
+    """
+    if isinstance(gui_node, dict) and gui_node.get("type") in ("minecraft:select", "minecraft:condition"):
+        fallback = gui_node.get("fallback")
+        if fallback is not None:
+            return collect_model_ids(fallback)
+    return collect_model_ids(gui_node)
 
 
 def creative_tab_item_ids(root: Path) -> set[str]:
@@ -48,14 +68,16 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=Path("build/item_icon_preview.png"))
     parser.add_argument("--report", type=Path, default=Path("build/item_icon_preview.json"))
     parser.add_argument("--columns", type=int, default=8)
-    parser.add_argument("--cell", type=int, default=ICON_CANVAS + 2 * CELL_PAD,
+    parser.add_argument("--cell", type=int, default=SLOT_FRAME_CANVAS + 2 * CELL_PAD,
                         help="cell pitch in preview pixels; the drawn slot box is always "
-                             f"exactly one vanilla slot ({ICON_CANVAS}px = {SLOT_PIXELS}px x {ICON_ZOOM})")
+                             f"exactly one vanilla slot ({SLOT_FRAME_CANVAS}px = {SLOT_FRAME_PIXELS}px x {ICON_ZOOM}, "
+                             f"icon drawn in the centred {ICON_CANVAS}px area)")
     parser.add_argument("--items", default="", help="comma-separated item ids; default is all")
     parser.add_argument("--vanilla-reference", action="store_true",
                         help="prepend a full-cube baseline rendered with the same vanilla GUI transform")
-    parser.add_argument("--include-hidden", action="store_true",
-                        help="include registered renderer-only items not listed in the creative tab")
+    parser.add_argument("--creative-only", action="store_true",
+                        help="restrict the sheet to creative-tab items (default: show every GUI proxy "
+                             "so hidden states and renderer-only items stay in the QA net)")
     args = parser.parse_args()
 
     root = (args.root or Path.cwd()).resolve()
@@ -66,7 +88,9 @@ def main() -> int:
     items_dir = assets_root / "items"
     requested = {part.strip() for part in args.items.split(",") if part.strip()}
     creative_items = creative_tab_item_ids(root)
-    include_everything = args.include_hidden or bool(requested) or not creative_items
+    # 默认全量：每个有 GUI proxy 的物品都要进预览，包括不在创意栏的酒容器
+    # 满状态、啤酒瓶和 renderer-only 项——它们的图标同样需要被 QA 覆盖。
+    include_everything = bool(requested) or not args.creative_only
     omitted_hidden = 0
     entries = []
 
@@ -82,7 +106,7 @@ def main() -> int:
         gui_node = next((case.get("model") for case in cases if case.get("when") in ("gui", ["gui"])), None)
         if gui_node is None:
             continue
-        model_ids = collect_model_ids(gui_node)
+        model_ids = preview_model_ids(gui_node)
         icon_layers = []
         projected = []
         for model_index, model_id in enumerate(model_ids):
@@ -164,23 +188,22 @@ def main() -> int:
     if not entries:
         parser.error("no item definitions with generated GUI proxy cases found; run normalize_item_icons.py --apply first")
     columns = max(1, args.columns)
-    cell = max(args.cell, ICON_CANVAS + 2 * CELL_PAD)
+    cell = max(args.cell, SLOT_FRAME_CANVAS + 2 * CELL_PAD)
     label_height = 20
     rows = (len(entries) + columns - 1) // columns
     sheet = Image.new("RGBA", (columns * cell, rows * (cell + label_height)), (58, 58, 58, 255))
     draw, font = ImageDraw.Draw(sheet), ImageFont.load_default()
     for index, entry in enumerate(entries):
         x, y = (index % columns) * cell, (index // columns) * (cell + label_height)
-        # 格子背景 = 图标画布 = 一个原版 16px slot，居中放在 cell 内。
-        # 不把背景画成整个 cell，否则格子比图标代表的真实 slot 大一圈。
-        sx = x + (cell - ICON_CANVAS) // 2
-        sy = y + (cell - ICON_CANVAS) // 2
-        # Pillow's rectangle is inclusive: sx+ICON_CANVAS would draw ICON_CANVAS+1 px.
-        # Subtract 1 on the far edge so the box is exactly one vanilla slot.
-        draw.rectangle((sx, sy, sx + ICON_CANVAS - 1, sy + ICON_CANVAS - 1),
+        # 格子框 = 一个完整原版 slot(18px)，居中放在 cell 内；图标绘制区(16px)
+        # 再居中放进格子框，四周各留 ICON_INSET(1px 边框 ×4)——这正是游戏里
+        # 图标相对格子的布局。Pillow rectangle 是闭区间，远边减 1 才是精确 72px。
+        fx = x + (cell - SLOT_FRAME_CANVAS) // 2
+        fy = y + (cell - SLOT_FRAME_CANVAS) // 2
+        draw.rectangle((fx, fy, fx + SLOT_FRAME_CANVAS - 1, fy + SLOT_FRAME_CANVAS - 1),
                        fill=(133, 133, 133, 255), outline=(225, 225, 225, 255))
         sprite = entry.pop("icon")
-        sheet.alpha_composite(sprite, (sx, sy))
+        sheet.alpha_composite(sprite, (fx + ICON_INSET, fy + ICON_INSET))
         draw.text((x + 3, y + cell + 2), entry["item"][:14], fill=(255, 255, 255, 255), font=font)
         draw.text((x + 3, y + cell + 11), f'{entry["projected_gui_size"][0]:.1f}x{entry["projected_gui_size"][1]:.1f} {entry["alpha_coverage"]:.0%}',
                   fill=(210, 210, 210, 255), font=font)
