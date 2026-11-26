@@ -284,6 +284,10 @@ CONTROLLER_FACE = {False: ((54, 44, 36), (122, 74, 40), (150, 100, 66)),
                    True: ((58, 46, 34), (243, 184, 88), (188, 120, 72))}
 CONTROLLER_MODELS = {False: "party_lights_controller", True: "party_lights_controller_lit"}
 CONTROLLER_ITEM = "party_lights_controller"
+# Priority 0..3, highest first. It is a blockstate property (not a block-entity field) because the
+# flood fill has to rank two neighbouring controllers while it walks blocks, and because a player
+# reads it back with "data get block" rather than opening a menu.
+CONTROLLER_PRIORITIES = (0, 1, 2, 3)
 
 
 def planks() -> Image.Image:
@@ -353,10 +357,11 @@ def write_controller() -> None:
     variants = {}
     for facing, yaw in (("north", 0), ("east", 90), ("south", 180), ("west", 270)):
         for powered in (False, True):
-            variant = {"model": f"pastoral_home:block/{CONTROLLER_MODELS[powered]}"}
-            if yaw:
-                variant["y"] = yaw
-            variants[f"facing={facing},powered={'true' if powered else 'false'}"] = variant
+            for priority in CONTROLLER_PRIORITIES:
+                variant = {"model": f"pastoral_home:block/{CONTROLLER_MODELS[powered]}"}
+                if yaw:
+                    variant["y"] = yaw
+                variants[f"facing={facing},powered={'true' if powered else 'false'},priority={priority}"] = variant
     (BLOCKSTATES / f"{CONTROLLER_ITEM}.json").write_text(
         json.dumps({"variants": variants}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"wrote controller: 2 models, 3 textures, {len(variants)} blockstate variants")

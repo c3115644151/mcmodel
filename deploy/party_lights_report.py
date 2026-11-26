@@ -57,6 +57,11 @@ ROPE_DRIVE = ROOT / "src/main/java/com/pastoralhome/entity/BridgeRopeDrive.java"
 ROPE_ENTITY = ROOT / "src/main/java/com/pastoralhome/entity/BridgeRopeEntity.java"
 PROGRAM = ROOT / "src/main/java/com/pastoralhome/block/PartyLightsProgram.java"
 NETWORK = ROOT / "src/main/java/com/pastoralhome/block/PartyLightsNetwork.java"
+SCORE = ROOT / "src/main/java/com/pastoralhome/block/PartyLightsScore.java"
+SCORES = ROOT / "src/main/java/com/pastoralhome/block/PartyLightsScores.java"
+TAPE = ROOT / "src/main/java/com/pastoralhome/block/PartyLightsTape.java"
+MOD_MAIN = ROOT / "src/main/java/com/pastoralhome/PastoralHome.java"
+SCORE_DATA = ROOT / "src/main/resources/data/pastoral_home/party_lights"
 
 SHEET_SIZE = (32, 128)
 FRAME = 32
@@ -90,6 +95,12 @@ SOURCE_ELEMENT = {"core": 2, "shell": 0, "neck": 1}
 PART_SLOT = {"core": "#lamp_core", "shell": "#lamp_shell", "neck": "#lamp_core"}
 ELEMENT_ORDER = ["core", "shell", "neck"]
 
+# The controller carries one more property than the lamp: two nets that touch can both want the same
+# lamp, and the player settles the tie by right-clicking the controller, so 4 priorities x 4 facings x
+# 2 powered states is 32 variants.
+CONTROLLER_PRIORITIES = ("0", "1", "2", "3")
+PROGRAM_NAMES = ("off", "solid", "beacon", "breath", "chase", "converge", "diverge", "cross", "ripple",
+                 "comet", "heart", "rain", "strobe", "alternate", "meter", "ribbon")
 ATTACHES = ("up", "down", "north", "south", "east", "west")
 FACINGS = ("north", "east", "south", "west")
 # Redstone turns the lamps into a display: the controller writes MODE=REMOTE on every lamp it can
@@ -625,21 +636,22 @@ def hanger_checks():
 def controller_checks():
     """The redstone face: a procedurally drawn controller whose eight states and program table hold."""
     variants = load(CONTROLLER_STATE)["variants"]
-    expected = {"facing=" + facing + ",powered=" + powered
-                for facing in FACINGS for powered in LIT_STATES}
+    expected = {"facing=" + facing + ",powered=" + powered + ",priority=" + priority
+                for facing in FACINGS for powered in LIT_STATES for priority in CONTROLLER_PRIORITIES}
     check(set(variants) == expected,
           "controller: blockstate covers " + str(len(expected)) + " combinations, got " + str(len(variants)))
     yaw = {"north": 0, "east": 90, "south": 180, "west": 270}
     for facing in FACINGS:
         for powered in LIT_STATES:
-            key = "facing=" + facing + ",powered=" + powered
-            variant = variants.get(key, {})
-            stem = "party_lights_controller_lit" if powered == "true" else "party_lights_controller"
-            check(variant.get("model") == "pastoral_home:block/" + stem,
-                  "controller: " + key + " draws " + stem)
-            got = variant.get("y", 0)
-            check(got == yaw[facing],
-                  "controller: " + key + " turns the face to " + str(yaw[facing]) + ", got " + str(got))
+            for priority in CONTROLLER_PRIORITIES:
+                key = "facing=" + facing + ",powered=" + powered + ",priority=" + priority
+                variant = variants.get(key, {})
+                stem = "party_lights_controller_lit" if powered == "true" else "party_lights_controller"
+                check(variant.get("model") == "pastoral_home:block/" + stem,
+                      "controller: " + key + " draws " + stem)
+                got = variant.get("y", 0)
+                check(got == yaw[facing],
+                      "controller: " + key + " turns the face to " + str(yaw[facing]) + ", got " + str(got))
     for stem in ("party_lights_controller", "party_lights_controller_lit"):
         path = MODELS / (stem + ".json")
         check(path.exists(), "controller: model " + stem + " exists")
@@ -686,6 +698,10 @@ def controller_checks():
     text = CONTROLLER_BLOCK.read_text(encoding="utf-8")
     check("HORIZONTAL_FACING" in text and "POWERED" in text,
           "controller block: declares facing and powered")
+    # Priority is a block state, not a block entity field, so it survives a chunk reload without the
+    # entity being read and so the blockstate can draw it in one look. `data get block` reads it too.
+    check('IntegerProperty.create("priority", 0, 3)' in text and "builder.add(FACING, POWERED, PRIORITY)" in text,
+          "controller block: priority is a 0..3 block state the player can click")
     # The analog output is the whole output contract: a comparator next to the controller reads the
     # network's clock, which is what lets a second group of lamps follow the first without any new
     # wiring. An output that silently returns 0 would look identical in a screenshot.
@@ -710,9 +726,13 @@ def controller_checks():
 
     program = PROGRAM.read_text(encoding="utf-8")
     check("COUNT = 16" in program, "program table: sixteen levels, one per redstone strength")
-    for name in ("OFF", "SOLID", "BEACON", "BREATH", "CHASE", "CONVERGE", "DIVERGE", "CROSS", "RIPPLE",
-                 "COMET", "HEART", "RAIN", "STROBE", "ALTERNATE", "METER", "RIBBON"):
-        check("int " + name + " = " in program, "program table: level " + name + " exists")
+    for name in PROGRAM_NAMES:
+        check("int " + name.upper() + " = " in program, "program table: level " + name + " exists")
+    # A score file names its steps; the names live in one list, and a rename that misses that list is
+    # exactly the kind of edit that loads fine and then plays OFF forever.
+    for name in PROGRAM_NAMES:
+        check('"' + name + '"' in program,
+              "program table: the name list spells " + name + " the way a score file has to")
     network = NETWORK.read_text(encoding="utf-8")
     check("MAX_LAMPS = 512" in network, "network: the span limit is 512 lamps")
     check("instanceof PartyLightsBlock" in network, "network: flood fill only walks through lamps")
@@ -756,8 +776,88 @@ def rope_network_checks():
           "rope entity: hanging or taking a lamp wakes the controller, which has no neighbour change to see")
 
 
+def score_checks():
+    """The choreography tape: a JSON score, a head that walks it, and the tie-break between nets."""
+    score = SCORE.read_text(encoding="utf-8")
+    tape = TAPE.read_text(encoding="utf-8")
+    scores = SCORES.read_text(encoding="utf-8")
+    main = MOD_MAIN.read_text(encoding="utf-8")
+    be = CONTROLLER_BE.read_text(encoding="utf-8")
+    drive = ROPE_DRIVE.read_text(encoding="utf-8")
+    network = NETWORK.read_text(encoding="utf-8")
+    block = CONTROLLER_BLOCK.read_text(encoding="utf-8")
+
+    # The tape is data, so every bound lives in the codec: an unparsed file is a lamp that never lights
+    # and a crash-free server, which is the hardest failure to trace back to a typo in a resource.
+    check("RecordCodecBuilder" in score and '"steps"' in score and '"tempo"' in score and '"loop"' in score,
+          "score: the tape is a codec with tempo, loop and steps")
+    check("MAX_STEPS = 64" in score and "MAX_TICKS = 1200" in score,
+          "score: a tape is bounded to 64 steps of at most 1200 ticks")
+    check("PartyLightsProgram.CODEC" in score,
+          "score: a step names its programme, so a typo fails the load instead of playing OFF")
+    check("distance(" in score and "Math.abs" in score,
+          "score: a focus measures Manhattan distance, which is how far a lamp is along a wall")
+    check("record Frame" in tape and "floorMod" in tape,
+          "tape: the head is a pure function of elapsed ticks and wraps when the score loops")
+    # Adding the score path must not change a controller with no score bound to it: the old reading is
+    # "distance + index" from the flood fill, and the old programme is the redstone strength itself.
+    check("scoreId" in be and "PartyLightsTape.frame(" in be,
+          "controller entity: a bound score moves the programme from the signal to the tape")
+    check("PartyLightsScore.distance(" in be,
+          "controller entity: a focus replaces the flood-fill distance for every lamp it drives")
+    for field in ('"Score"', '"StartedAt"', '"Lamps"', '"MaxDistance"', '"Step"', '"StepTicks"'):
+        check(field in be, "controller entity: persists " + field.strip('"') + " for `data get block`")
+    check('getStringOr("Score"' in be,
+          "controller entity: reads its score id back as a string, empty meaning none")
+    # Binding is by id, so one JSON can drive many controllers and a datapack swap re-costumes a house
+    # without touching a block. The item is only the handle: any renamed item whose name parses works.
+    check("bindScore" in block and "unbindScore" in block,
+          "controller block: a renamed item binds a score, crouching unbinds it")
+    check("PartyLightsScores.parse(" in block,
+          "controller block: the name on the item is resolved through the score loader")
+    check("SimpleJsonResourceReloadListener" in scores and "FileToIdConverter.json(" in scores,
+          "score loader: reads data/<ns>/party_lights/*.json through a vanilla reload listener")
+    check("AddServerReloadListenersEvent" in main and "PartyLightsScores.LISTENER_ID" in main,
+          "score loader: registered on the server reload so /reload picks a new tape up")
+    # Ties are settled by the player, block order only breaks the remaining ties. Priority has to be
+    # read from the neighbour's state, which is why the flood fill takes the level and not a snapshot.
+    check("priorityAt" in network and "PartyLightsControllerBlock.PRIORITY" in network,
+          "network: a lamp touching two controllers goes to the higher priority, block order breaks ties")
+    check("focus" in drive and "PartyLightsScore.distance(" in drive,
+          "rope drive: a cord lamp measures its own distance from the focus, not from the cord's foot")
+    check("decode" in drive and '",nil"' in drive,
+          "rope drive: the synched tag carries the focus and still decodes a pre-score payload")
+
+    # The shipped examples are the ones a player actually reads. Load them the way the game does: any
+    # unknown programme, an empty step list or a tempo outside 4..200 would fail the whole reload.
+    for name in ("ribbon_demo", "porch_night"):
+        path = SCORE_DATA / (name + ".json")
+        check(path.exists(), "score data: " + name + ".json ships")
+        if not path.exists():
+            continue
+        try:
+            tape_json = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            check(False, "score data: " + name + ".json parses (" + str(error) + ")")
+            continue
+        tempo = tape_json.get("tempo", 16)
+        steps = tape_json.get("steps") or []
+        check(4 <= tempo <= 200, "score data: " + name + " tempo " + str(tempo) + " is inside 4..200")
+        check(1 <= len(steps) <= 64, "score data: " + name + " has 1..64 steps")
+        for step in steps:
+            programme = step.get("program")
+            ticks = step.get("ticks")
+            check(programme in PROGRAM_NAMES,
+                  "score data: " + name + " step names " + str(programme) + ", which the table knows")
+            check(isinstance(ticks, int) and 1 <= ticks <= 1200,
+                  "score data: " + name + " step runs " + str(ticks) + " ticks, inside 1..1200")
+            check(isinstance(step.get("focus"), (list, type(None))) or step.get("focus") is None,
+                  "score data: " + name + " focus is a position or absent")
+
+
 def main():
     rope_network_checks()
+    score_checks()
     geometry_checks()
     uv_checks()
     intent_checks()
