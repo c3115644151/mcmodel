@@ -52,6 +52,9 @@ CONTROLLER_STATE = ASSETS / "blockstates/party_lights_controller.json"
 CONTROLLER_ITEM = ASSETS / "items/party_lights_controller.json"
 CONTROLLER_BLOCK = ROOT / "src/main/java/com/pastoralhome/block/PartyLightsControllerBlock.java"
 CONTROLLER_BE = ROOT / "src/main/java/com/pastoralhome/blockentity/PartyLightsControllerBlockEntity.java"
+ROPE_LAMPS = ROOT / "src/main/java/com/pastoralhome/entity/BridgeRopeLamps.java"
+ROPE_DRIVE = ROOT / "src/main/java/com/pastoralhome/entity/BridgeRopeDrive.java"
+ROPE_ENTITY = ROOT / "src/main/java/com/pastoralhome/entity/BridgeRopeEntity.java"
 PROGRAM = ROOT / "src/main/java/com/pastoralhome/block/PartyLightsProgram.java"
 NETWORK = ROOT / "src/main/java/com/pastoralhome/block/PartyLightsNetwork.java"
 
@@ -719,7 +722,42 @@ def controller_checks():
           "network: a lamp touching two controllers is owned by the lower block position")
 
 
+def rope_network_checks():
+    """The cord half: lamps on a rope are entities, so the controller cannot flood fill to them."""
+    lamps = ROPE_LAMPS.read_text(encoding="utf-8")
+    drive = ROPE_DRIVE.read_text(encoding="utf-8")
+    entity = ROPE_ENTITY.read_text(encoding="utf-8")
+    be = CONTROLLER_BE.read_text(encoding="utf-8")
+    network = NETWORK.read_text(encoding="utf-8")
+    # A cord under a controller must run the same program as the block lamps, through the same call.
+    check("PartyLightsProgram.lit(" in drive,
+          "rope drive: a cord lamp asks the same program table a block lamp asks")
+    check("case REMOTE -> drive.lit(" in lamps,
+          "rope layout: REMOTE answers with the network drive, not with a hard-coded dark")
+    check("BridgeRopeDrive.NONE" in lamps,
+          "rope layout: a cord that lost its controller falls back to dark")
+    check("DRIVE" in entity and "setDrive" in entity and "drive()" in entity,
+          "rope entity: carries the network clock as synched data")
+    check("if (!encoded.equals(this.entityData.get(DRIVE)))" in entity,
+          "rope entity: writes the drive only when it changes, so a tick loop cannot spam the sync")
+    check('output.putString("drive"' in entity, "rope entity: persists the drive with the rope")
+    # Claiming and releasing the cord follows the same OFF/REMOTE rule as the block lamps.
+    check("findRopes" in be and "driveRopes" in be,
+          "controller entity: finds the cords tied to its own network and hands them the clock")
+    check("getEntitiesOfClass(BridgeRopeEntity.class" in be,
+          "controller entity: a rope's centre is mid-span, so the search needs the network box plus reach")
+    check("rope.setLampMode(PartyLightsBlock.Mode.REMOTE)" in be,
+          "controller entity: claims a cord that is still OFF, exactly like a block lamp")
+    check("BridgeRopeDrive.NONE" in be,
+          "controller entity: clears the drive when it hands the cord back")
+    check("invalidateNear" in network,
+          "network: a rope waking its controller is a helper, not a second copy of the flood fill")
+    check("PartyLightsNetwork.invalidateNear" in entity,
+          "rope entity: hanging or taking a lamp wakes the controller, which has no neighbour change to see")
+
+
 def main():
+    rope_network_checks()
     geometry_checks()
     uv_checks()
     intent_checks()

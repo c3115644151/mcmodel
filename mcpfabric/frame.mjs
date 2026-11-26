@@ -48,9 +48,16 @@ export function shotFor({ blocks, azimuth = 0, elevation = 15, distance = null, 
                           feet = null, width = 1920, height = 1080, pad = 0 }) {
   const box = subjectBox(blocks, pad);
   const aspect = width / height;
-  const range = distance === null ? fitDistance(box, aspect, zoom) : distance;
   const a = rad(azimuth);
   const e = rad(elevation);
+  // A pinned eye has one extra constraint the fit does not: at a shallow elevation the camera must
+  // stand back far enough that the line of sight can still reach the subject. Without this the fit
+  // distance (a couple of blocks for a small furniture piece) puts the eye almost on top of the
+  // subject and the shot becomes a photo of the ground with one corner of the model in frame.
+  const fit = fitDistance(box, aspect, zoom);
+  const drop = feet === null ? 0 : (feet + EYE_HEIGHT) - box.center[1];
+  const reach = feet === null || Math.abs(Math.tan(e)) < 1e-3 ? 0 : drop / Math.tan(e);
+  const range = distance === null ? Math.max(fit, Math.abs(reach), 2) : distance;
   const horizontal = range * Math.cos(e);
   const eye = [
     box.center[0] + Math.sin(a) * horizontal,

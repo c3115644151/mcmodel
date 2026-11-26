@@ -21,6 +21,8 @@
 //   "entities": [{"type": "pastoral_home:bridge_rope", "radius": 32,
 //                 "position": [120, -60, -200]}],
 //   "blocks": [[117, -62, -200], [122, -62, -200]],
+//   "entityChecks": [{"type": "pastoral_home:bridge_rope", "path": "lamp_mode",
+//                   "expect": 4, "position": [122, -61, -199.5]}],
 //   "shots": [{"name": "front", "out": "build/shots/rope.png",
 //              "camera": {"x": 119.5, "y": -61, "z": -196, "yaw": 180, "pitch": 15}}]
 // }
@@ -206,7 +208,8 @@ function main() {
     place: job.place, after: job.after, commands: job.commands, checks: job.checks, waitMs: job.waitMs,
   }];
   for (const [index, stage] of stages.entries()) {
-    const bag = { placed: [], after: [], commands: {}, stateChecks: [] };
+    const bag = { name: stage.name ?? ("stage" + index), placed: [], after: [], commands: {},
+      stateChecks: [], entityChecks: [] };
     // run_script acknowledges before its queued commands have run, so anything that reads the
     // world straight afterwards would see the state from before the script. Settle first, always.
     sleep(stage.waitMs ?? (index === 0 ? job.waitMs ?? 800 : 800));
@@ -214,6 +217,7 @@ function main() {
     placeAll(stage.place ?? [], bag.placed);
     for (const text of stage.commands ?? []) bag.commands[text] = command(text);
     checkAll(stage.checks ?? [], bag.stateChecks);
+    entityCheckAll(stage.entityChecks ?? [], bag.entityChecks);
     // A circuit stage is worth a photo too: "powered" needs the lamps lit in the frame, while
     // "released" needs them dim, and both belong to the same run.
     bag.shots = {};
@@ -222,6 +226,7 @@ function main() {
   }
   report.placed = report.stages.flatMap((stage) => stage.placed);
   report.stateChecks = report.stages.flatMap((stage) => stage.stateChecks);
+  report.entityStateChecks = report.stages.flatMap((stage) => stage.entityChecks);
   report.commands = Object.assign({}, ...report.stages.map((stage) => stage.commands));
 
   report.entities = {};
@@ -264,6 +269,21 @@ function main() {
   const outPath = resolve(ROOT, "build/probes/" + name + ".json");
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, JSON.stringify(report, null, 2), "utf8");
+  // The evidence a stage gives is a row of numbers, not a screenshot: print it as a table so the run
+  // can be read without opening the report, and so a regression is one changed line.
+  for (const stage of report.stages) {
+    const bad = stage.stateChecks.filter((c) => !c.ok).length + stage.entityChecks.filter((c) => !c.ok).length;
+    const total = stage.stateChecks.length + stage.entityChecks.length;
+    const parts = ["blocks " + (stage.stateChecks.length - stage.stateChecks.filter((c) => !c.ok).length)
+      + "/" + stage.stateChecks.length,
+      "entities " + (stage.entityChecks.length - stage.entityChecks.filter((c) => !c.ok).length)
+      + "/" + stage.entityChecks.length];
+    console.log("[stage] " + String(stage.name).padEnd(10) + " " + (bad === 0 ? "PASS" : "FAIL") + "  "
+      + parts.join("  "));
+    for (const check of stage.entityChecks) {
+      console.log("         " + check.path + " = " + check.actual + (check.ok ? "" : "  (want " + check.expect + ")"));
+    }
+  }
   console.log(JSON.stringify(report, null, 2));
   console.log("report written: " + rel(outPath));
 }
@@ -284,6 +304,35 @@ function placeAll(entries, bag) {
     const ok = value.success !== false && state.startsWith(blockId.split("[")[0]);
     bag.push({ position, blockId, state, ok, missing: ok ? [] : ["did not become " + blockId] });
     if (!ok) console.error("[probe] place " + position.join(",") + " -> " + (state || JSON.stringify(value)));
+  }
+}
+
+/**
+ * Entity state is the only witness for anything that is not a block: a cord's mode, the clock a
+ * controller handed it, a chest's contents. Read one field by name and compare it to the value the
+ * stage expects, so the evidence is a number rather than a picture of a rope that "looks lit".
+ */
+function entityCheckAll(list, bag) {
+  for (const want of list) {
+    const position = Array.isArray(want.position) ? want.position : null;
+    if (!position || position.length !== 3) {
+      throw new Error("entityChecks entry needs position [x,y,z]: " + JSON.stringify(want));
+    }
+    const selector = "@e[type=" + want.type + ",sort=nearest,limit=1]";
+    const answer = command("data get entity " + selector + " " + want.path);
+    const payload = dig(answer, "output") ?? dig(answer, "data") ?? {};
+    const lines = Array.isArray(payload) ? payload : (payload.output ?? []);
+    const line = String(lines[0] ?? "");
+    const actual = line.includes("：") ? line.split("：").pop().trim() : line;
+    const got = actual.replace(/^"|"$/g, "");
+    // A composite value (the clock a cord carries) is worth checking by shape: the exact pulse count
+    // changes every tick, but "it names this programme and this span" does not.
+    const ok = want.contains ? String(got).includes(String(want.contains))
+      : String(got) === String(want.expect);
+    const wanted = want.contains ?? want.expect;
+    bag.push({ type: want.type, path: want.path, position, expect: wanted, contains: !!want.contains, actual: got, ok });
+    if (!ok) console.error("[probe] " + position.join(",") + " " + want.type + "." + want.path
+      + ": " + got + " does not match " + wanted);
   }
 }
 
