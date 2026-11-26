@@ -194,13 +194,35 @@ function main() {
     report.script = run("run_script", "@" + rel(payloadPath));
   }
 
-  report.after = (job.after ?? []).map((text) => ({ text, result: command(text) }));
-  // run_script acknowledges before its queued commands have run, so a job that reads the
-  // world straight afterwards sees the state from before the script. Settle first, always.
-  sleep(job.waitMs ?? 800);
-
-  report.commands = {};
-  for (const text of job.commands ?? []) report.commands[text] = command(text);
+  // A scene script fires mc.call('command.run') without a receipt, and a dropped setblock looks
+  // exactly like a block that never existed: the lamp simply is not there when the probe reads it.
+  // Anything that must exist goes through set_block, which echoes the resulting state.
+  //
+  // A circuit has stages (power on, take a lamp back, cut power) and each stage has to be read
+  // before the next one runs, so a job is a list of stages rather than one flat snapshot. A job
+  // without steps is still one stage holding the old flat keys.
+  report.stages = [];
+  const stages = job.steps ?? [{
+    place: job.place, after: job.after, commands: job.commands, checks: job.checks, waitMs: job.waitMs,
+  }];
+  for (const [index, stage] of stages.entries()) {
+    const bag = { placed: [], after: [], commands: {}, stateChecks: [] };
+    // run_script acknowledges before its queued commands have run, so anything that reads the
+    // world straight afterwards would see the state from before the script. Settle first, always.
+    sleep(stage.waitMs ?? (index === 0 ? job.waitMs ?? 800 : 800));
+    bag.after = (stage.after ?? []).map((text) => ({ text, result: command(text) }));
+    placeAll(stage.place ?? [], bag.placed);
+    for (const text of stage.commands ?? []) bag.commands[text] = command(text);
+    checkAll(stage.checks ?? [], bag.stateChecks);
+    // A circuit stage is worth a photo too: "powered" needs the lamps lit in the frame, while
+    // "released" needs them dim, and both belong to the same run.
+    bag.shots = {};
+    for (const shot of stage.shots ?? []) bag.shots[shot.name ?? shot.out] = shoot(shot);
+    report.stages.push(bag);
+  }
+  report.placed = report.stages.flatMap((stage) => stage.placed);
+  report.stateChecks = report.stages.flatMap((stage) => stage.stateChecks);
+  report.commands = Object.assign({}, ...report.stages.map((stage) => stage.commands));
 
   report.entities = {};
   report.entityChecks = [];
@@ -235,7 +257,7 @@ function main() {
     report.blocks[pos.join(",")] = tool("get_block", { x: pos[0], y: pos[1], z: pos[2] });
   }
 
-  report.shots = {};
+  report.shots = Object.assign({}, ...report.stages.map((stage) => stage.shots ?? {}));
   for (const shot of job.shots ?? []) report.shots[shot.name ?? shot.out] = shoot(shot);
 
   report.finishedAt = new Date().toISOString();
@@ -244,6 +266,48 @@ function main() {
   writeFileSync(outPath, JSON.stringify(report, null, 2), "utf8");
   console.log(JSON.stringify(report, null, 2));
   console.log("report written: " + rel(outPath));
+}
+
+/**
+ * Place blocks that must exist, one at a time, with the state the game reports back. A block that
+ * did not appear is reported here instead of silently turning a probe into a photo of an empty wall.
+ */
+function placeAll(entries, bag) {
+  for (const entry of entries) {
+    const position = Array.isArray(entry.position) ? entry.position : [];
+    if (position.length !== 3) throw new Error("place entry needs position [x,y,z]: " + JSON.stringify(entry));
+    const blockId = entry.blockId ?? entry.id;
+    if (!blockId) throw new Error("place entry needs blockId: " + JSON.stringify(entry));
+    const found = tool("set_block", { x: position[0], y: position[1], z: position[2], blockId });
+    const value = dig(found, "value") ?? {};
+    const state = String(value.state ?? "");
+    const ok = value.success !== false && state.startsWith(blockId.split("[")[0]);
+    bag.push({ position, blockId, state, ok, missing: ok ? [] : ["did not become " + blockId] });
+    if (!ok) console.error("[probe] place " + position.join(",") + " -> " + (state || JSON.stringify(value)));
+  }
+}
+
+/**
+ * A shop-window screenshot proves nothing about LIT, MODE or POWERED: a check states the block
+ * state the stage expects, so a broken tick loop fails loudly instead of looking pretty.
+ */
+function checkAll(list, bag) {
+  for (const want of list) {
+    const pos = Array.isArray(want.position) ? want.position : [];
+    if (pos.length !== 3) throw new Error("checks entry needs position [x,y,z]: " + JSON.stringify(want));
+    const found = tool("get_block", { x: pos[0], y: pos[1], z: pos[2] });
+    const value = dig(found, "value") ?? {};
+    const problems = [];
+    if (want.id && value.id !== want.id) problems.push("id " + value.id + " != " + want.id);
+    const properties = value.properties ?? {};
+    for (const [name, expected] of Object.entries(want.properties ?? {})) {
+      const actual = properties[name];
+      if (String(actual) !== String(expected)) problems.push(name + "=" + actual + " != " + expected);
+    }
+    const ok = problems.length === 0;
+    bag.push({ position: pos, ok, problems, want });
+    if (!ok) console.error("[probe] " + pos.join(",") + ": " + problems.join(", "));
+  }
 }
 
 main();

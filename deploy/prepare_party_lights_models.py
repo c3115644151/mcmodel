@@ -70,7 +70,9 @@ PART_SHEET = {"core": "lamp_core", "shell": "lamp_shell", "neck": "lamp_core"}
 
 ATTACHES = ("up", "down", "north", "south", "east", "west")
 FACINGS = ("north", "east", "south", "west")
-MODES = ("off", "chase", "steady")
+# Redstone turns the lamps into a display: the controller writes MODE=REMOTE on every lamp it
+# reaches, so a variant exists for it like any other mode (6 mounts x 5 modes x 2 lit x 4 facings).
+MODES = ("off", "chase", "steady", "beacon", "remote")
 LIT_STATES = ("false", "true")
 
 # The hanger points +Y in the model. Minecraft's "x"/"y" keys are Quadrant values, and Quadrant is
@@ -270,11 +272,103 @@ def write_blockstates() -> None:
           f"{len(STATE_FRAMES)} models turned by x/y)")
 
 
+
+# --- The redstone face: a companion block the artist never drew ------------------------------
+# The controller is not in the .bbmodel, so its geometry and art are procedural, and they live in
+# this same generator so the whole party-light feature ships from one command.
+CONTROLLER_SIZE = 16
+CONTROLLER_SIDE = (156, 115, 74)
+CONTROLLER_SIDE_DARK = (124, 89, 57)
+CONTROLLER_SIDE_LIGHT = (176, 135, 92)
+CONTROLLER_FACE = {False: ((54, 44, 36), (122, 74, 40), (150, 100, 66)),
+                   True: ((58, 46, 34), (243, 184, 88), (188, 120, 72))}
+CONTROLLER_MODELS = {False: "party_lights_controller", True: "party_lights_controller_lit"}
+CONTROLLER_ITEM = "party_lights_controller"
+
+
+def planks() -> Image.Image:
+    """A dark panelled wood body: seams every five rows, sparse light grain texels."""
+    image = Image.new("RGBA", (CONTROLLER_SIZE, CONTROLLER_SIZE), CONTROLLER_SIDE + (255,))
+    pixels = image.load()
+    for y in range(CONTROLLER_SIZE):
+        for x in range(CONTROLLER_SIZE):
+            shade = CONTROLLER_SIDE_DARK if y % 5 == 4 else CONTROLLER_SIDE
+            if y % 5 != 4 and (x * 3 + y * 7) % 11 == 0:
+                shade = CONTROLLER_SIDE_LIGHT
+            pixels[x, y] = shade + (255,)
+    return image
+
+
+def window(on: bool) -> Image.Image:
+    """The reading face: an amber slot that brightens when the controller is eating signal."""
+    base, slot, rivet = CONTROLLER_FACE[on]
+    image = Image.new("RGBA", (CONTROLLER_SIZE, CONTROLLER_SIZE), base + (255,))
+    pixels = image.load()
+    for y in range(5, 11):
+        for x in range(5, 11):
+            pixels[x, y] = slot + (255,)
+    for x, y in ((1, 1), (14, 1), (1, 14), (14, 14)):
+        pixels[x, y] = rivet + (255,)
+    return image
+
+
+def controller_elements(face: str) -> list[dict]:
+    """A 16-cube body whose z starts at 1, plus a plate that fills the last unit: no coplanar faces."""
+    side = lambda uv: {"texture": "#side", "uv": uv}
+    body = {"name": "body", "from": [0.0, 0.0, 1.0], "to": [16.0, 16.0, 16.0],
+            "faces": {name: side([0, 0, 16, 16])
+                      for name in ("north", "east", "south", "west", "up", "down")}}
+    plate = {"name": "plate", "from": [2.0, 4.0, 0.0], "to": [14.0, 12.0, 1.0],
+             "faces": {"north": {"texture": face, "uv": [2, 4, 14, 12]},
+                       "east": side([0, 0, 1, 8]),
+                       "west": side([0, 0, 1, 8]),
+                       "up": side([2, 0, 14, 1]),
+                       "down": side([2, 0, 14, 1])}}
+    return [body, plate]
+
+
+def write_controller() -> None:
+    BLOCKSTATES.mkdir(parents=True, exist_ok=True)
+    (ASSETS / "items").mkdir(parents=True, exist_ok=True)
+    planks().save(TEXTURES / "party_lights_controller_side.png")
+    window(False).save(TEXTURES / "party_lights_controller_face_off.png")
+    window(True).save(TEXTURES / "party_lights_controller_face_on.png")
+    for powered, stem in CONTROLLER_MODELS.items():
+        textures = {"particle": f"pastoral_home:block/{stem}_particle",
+                    "side": "pastoral_home:block/party_lights_controller_side",
+                    "face": f"pastoral_home:block/party_lights_controller_face_{'on' if powered else 'off'}"}
+        model = {"parent": "minecraft:block/block",
+                 "credit": "Procedural companion to the party lights",
+                 "textures": textures,
+                 "elements": controller_elements("#face")}
+        (MODELS / f"{stem}.json").write_text(json.dumps(model, ensure_ascii=False, indent=2) + "\n",
+                                            encoding="utf-8")
+    items = ASSETS / "items" / f"{CONTROLLER_ITEM}.json"
+    if not items.exists():
+        # Only the first bootstrap: from then on normalize_item_icons.py owns this definition, because
+        # it rewrites it into the display-context select that points the GUI slot at a proxy.
+        items.write_text(json.dumps({"model": {"type": "minecraft:model",
+                                               "model": f"pastoral_home:block/{CONTROLLER_MODELS[False]}"}},
+                                    ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    variants = {}
+    for facing, yaw in (("north", 0), ("east", 90), ("south", 180), ("west", 270)):
+        for powered in (False, True):
+            variant = {"model": f"pastoral_home:block/{CONTROLLER_MODELS[powered]}"}
+            if yaw:
+                variant["y"] = yaw
+            variants[f"facing={facing},powered={'true' if powered else 'false'}"] = variant
+    (BLOCKSTATES / f"{CONTROLLER_ITEM}.json").write_text(
+        json.dumps({"variants": variants}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"wrote controller: 2 models, 3 textures, {len(variants)} blockstate variants")
+
+
 def main() -> None:
     data = load_source()
     TEXTURES.mkdir(parents=True, exist_ok=True)
     MODELS.mkdir(parents=True, exist_ok=True)
     write_textures(data)
+
+    write_controller()
 
     kept = set()
     elements = lamp_elements()
@@ -286,6 +380,7 @@ def main() -> None:
     write_model(MODELS / "party_lights_inventory.json", elements, "lit",
                display=INVENTORY_DISPLAY, shell_texture="party_lights_shell_item")
     kept.add("party_lights_inventory.json")
+    kept |= {f"{stem}.json" for stem in CONTROLLER_MODELS.values()}
 
     for path in MODELS.glob("party_lights*.json"):
         if path.name not in kept:
@@ -298,6 +393,9 @@ def main() -> None:
     # The lit sheets animate, so their descriptors are part of the shipped set.
     allowed |= {f"party_lights_{part}_lit.png.mcmeta" for part in ("core", "shell")}
     allowed |= {"party_lights_shell_item.png", "party_lights_shell_item.png.mcmeta"}
+    allowed |= {"party_lights_controller_side.png", "party_lights_controller_face_off.png",
+                "party_lights_controller_face_on.png"}
+    allowed |= {f"{stem}_particle.png" for stem in CONTROLLER_MODELS.values()}
     for path in TEXTURES.glob("party_lights*"):
         if path.name not in allowed:
             path.unlink()

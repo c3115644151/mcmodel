@@ -48,6 +48,12 @@ SOURCE = ROOT / "tools/deploy/model_sources/party_lights/party_lights.bbmodel"
 BLOCK = ROOT / "src/main/java/com/pastoralhome/block/PartyLightsBlock.java"
 RENDERER = ROOT / "src/main/java/com/pastoralhome/client/renderer/BridgeRopeRenderer.java"
 ITEM = ASSETS / "items/party_lights.json"
+CONTROLLER_STATE = ASSETS / "blockstates/party_lights_controller.json"
+CONTROLLER_ITEM = ASSETS / "items/party_lights_controller.json"
+CONTROLLER_BLOCK = ROOT / "src/main/java/com/pastoralhome/block/PartyLightsControllerBlock.java"
+CONTROLLER_BE = ROOT / "src/main/java/com/pastoralhome/blockentity/PartyLightsControllerBlockEntity.java"
+PROGRAM = ROOT / "src/main/java/com/pastoralhome/block/PartyLightsProgram.java"
+NETWORK = ROOT / "src/main/java/com/pastoralhome/block/PartyLightsNetwork.java"
 
 SHEET_SIZE = (32, 128)
 FRAME = 32
@@ -83,7 +89,9 @@ ELEMENT_ORDER = ["core", "shell", "neck"]
 
 ATTACHES = ("up", "down", "north", "south", "east", "west")
 FACINGS = ("north", "east", "south", "west")
-MODES = ("off", "chase", "steady")
+# Redstone turns the lamps into a display: the controller writes MODE=REMOTE on every lamp it can
+# reach, so the enum and the blockstate both carry five modes, not the three a player can click.
+MODES = ("off", "chase", "steady", "beacon", "remote")
 LIT_STATES = ("false", "true")
 
 MOUNT_NORMAL = {"up": (0, 1, 0), "down": (0, -1, 0), "north": (0, 0, -1),
@@ -265,7 +273,12 @@ def sheet_checks():
     # build still writes a name_particle.png next to any atlas-backed model, so those stay permitted.
     allowed = (expected | {stem + "_particle.png" for stem in stems}
                | {f"party_lights_{part}_lit.png.mcmeta" for part in ("core", "shell")}
-               | {"party_lights_shell_item.png.mcmeta"})
+               | {"party_lights_shell_item.png.mcmeta"}
+               # The controller is drawn procedurally by the same generator, so its three tiles live
+               # in this folder too and would otherwise read as orphans of the lamp pipeline.
+               | {"party_lights_controller_side.png", "party_lights_controller_face_off.png",
+                  "party_lights_controller_face_on.png", "party_lights_controller_particle.png",
+                  "party_lights_controller_lit_particle.png"})
     shipped = {p.name for p in TEXTURES.glob("party_lights*")}
     check(expected <= shipped and shipped <= allowed,
           "sheet: only the two frames per state and their particle copies ship - unexpected "
@@ -606,6 +619,106 @@ def hanger_checks():
           "hanger: HANGER_SINK clears the rope half but stays under a quarter " + sink)
 
 
+def controller_checks():
+    """The redstone face: a procedurally drawn controller whose eight states and program table hold."""
+    variants = load(CONTROLLER_STATE)["variants"]
+    expected = {"facing=" + facing + ",powered=" + powered
+                for facing in FACINGS for powered in LIT_STATES}
+    check(set(variants) == expected,
+          "controller: blockstate covers " + str(len(expected)) + " combinations, got " + str(len(variants)))
+    yaw = {"north": 0, "east": 90, "south": 180, "west": 270}
+    for facing in FACINGS:
+        for powered in LIT_STATES:
+            key = "facing=" + facing + ",powered=" + powered
+            variant = variants.get(key, {})
+            stem = "party_lights_controller_lit" if powered == "true" else "party_lights_controller"
+            check(variant.get("model") == "pastoral_home:block/" + stem,
+                  "controller: " + key + " draws " + stem)
+            got = variant.get("y", 0)
+            check(got == yaw[facing],
+                  "controller: " + key + " turns the face to " + str(yaw[facing]) + ", got " + str(got))
+    for stem in ("party_lights_controller", "party_lights_controller_lit"):
+        path = MODELS / (stem + ".json")
+        check(path.exists(), "controller: model " + stem + " exists")
+        if not path.exists():
+            continue
+        model = load(path)
+        textures = model.get("textures", {})
+        check(textures.get("particle") == "pastoral_home:block/" + stem + "_particle",
+              "controller: " + stem + " derives its break tile, got " + str(textures.get("particle")))
+        check(textures.get("side") == "pastoral_home:block/party_lights_controller_side",
+              "controller: " + stem + " draws the panelled side")
+        face = "on" if stem.endswith("_lit") else "off"
+        check(textures.get("face") == "pastoral_home:block/party_lights_controller_face_" + face,
+              "controller: " + stem + " draws the " + face + " window")
+        elements = {element.get("name"): element for element in model.get("elements", [])}
+        check(set(elements) == {"body", "plate"},
+              "controller: " + stem + " is a body plus a reading plate, got " + str(sorted(elements)))
+        body = elements.get("body", {})
+        plate = elements.get("plate", {})
+        check(body.get("from") == [0.0, 0.0, 1.0] and body.get("to") == [16.0, 16.0, 16.0],
+              "controller: the body fills the cell except the last unit of z")
+        check(plate.get("from") == [2.0, 4.0, 0.0] and plate.get("to") == [14.0, 12.0, 1.0],
+              "controller: the plate sits in that last unit, so no face is coplanar with the body")
+        # No element may reach past the cell: a controller that pokes out of its block clips into the
+        # lamp next to it and looks like a modelling mistake in every screenshot.
+        for element in (body, plate):
+            span = element.get("from", [0, 0, 0]) + element.get("to", [0, 0, 0])
+            check(all(-0.001 <= value <= 16.001 for value in span),
+                  "controller: " + str(element.get("name")) + " stays inside the cell")
+    for name in ("side", "face_off", "face_on"):
+        path = TEXTURES / ("party_lights_controller_" + name + ".png")
+        check(path.exists(), "controller: texture " + name + " exists")
+        if not path.exists():
+            continue
+        image = Image.open(path)
+        check(image.size == (16, 16), "controller: texture " + name + " is 16x16, got " + str(image.size))
+        check(image.convert("RGBA").getextrema()[3] == (255, 255),
+              "controller: texture " + name + " is fully opaque")
+    check(CONTROLLER_ITEM.exists(), "controller: items/party_lights_controller.json exists")
+    if CONTROLLER_ITEM.exists():
+        check("party_lights_controller" in json.dumps(load(CONTROLLER_ITEM)),
+              "controller: the item points at the controller's own model")
+
+    text = CONTROLLER_BLOCK.read_text(encoding="utf-8")
+    check("HORIZONTAL_FACING" in text and "POWERED" in text,
+          "controller block: declares facing and powered")
+    # The analog output is the whole output contract: a comparator next to the controller reads the
+    # network's clock, which is what lets a second group of lamps follow the first without any new
+    # wiring. An output that silently returns 0 would look identical in a screenshot.
+    check("hasAnalogOutputSignal" in text and "getAnalogOutputSignal" in text,
+          "controller block: answers a comparator with the network phase")
+    check("isSignalSource" not in text,
+          "controller block: does not transmit power, so redstone dust cannot feed it back")
+    be = CONTROLLER_BE.read_text(encoding="utf-8")
+    check("getBestNeighborSignal" in be,
+          "controller entity: reads the vanilla best-neighbour signal, so every redstone part works")
+    check("PartyLightsProgram.lit(" in be, "controller entity: drives the lamps through the program table")
+    check("PartyLightsNetwork.compile(" in be, "controller entity: compiles the network before driving")
+    # Claiming only what is still OFF is the difference between a controller and a thief: a player
+    # who right-clicks a lamp to STEADY while the network is live must keep that lamp. Re-claiming
+    # anything that is not REMOTE would take it back on the very next tick and make the click useless.
+    check("boolean claim = mode == PartyLightsBlock.Mode.OFF;" in be,
+          "controller entity: only claims lamps the player left on OFF, so a right-click takes one back")
+    check("if (!claim && !mine) continue;" in be,
+          "controller entity: never touches a lamp the player drives himself, not even its LIT")
+    check("Mode.REMOTE" in be and "releaseMembers" in be,
+          "controller entity: hands every REMOTE lamp back when the signal drops")
+
+    program = PROGRAM.read_text(encoding="utf-8")
+    check("COUNT = 16" in program, "program table: sixteen levels, one per redstone strength")
+    for name in ("OFF", "SOLID", "BEACON", "BREATH", "CHASE", "CONVERGE", "DIVERGE", "CROSS", "RIPPLE",
+                 "COMET", "HEART", "RAIN", "STROBE", "ALTERNATE", "METER", "RIBBON"):
+        check("int " + name + " = " in program, "program table: level " + name + " exists")
+    network = NETWORK.read_text(encoding="utf-8")
+    check("MAX_LAMPS = 512" in network, "network: the span limit is 512 lamps")
+    check("instanceof PartyLightsBlock" in network, "network: flood fill only walks through lamps")
+    # Ownership has to be settled by data, not by which controller ticked last: a lamp touching two
+    # controllers would otherwise flicker between two programs every tick.
+    check("prefersAnotherController" in network,
+          "network: a lamp touching two controllers is owned by the lower block position")
+
+
 def main():
     geometry_checks()
     uv_checks()
@@ -617,6 +730,7 @@ def main():
     particle_checks()
     hanger_checks()
     contract_checks()
+    controller_checks()
     failed = [label for ok, label in checks if not ok]
     for label in failed:
         print("FAIL " + label)
