@@ -876,9 +876,13 @@ def player_and_chain_checks():
     pick = (ROOT / "src/main/java/com/pastoralhome/client/RopePickPolicy.java").read_text(encoding="utf-8")
     check("removeLampUnderCrosshair" in rope and "lampBox(" in rope and ".clip(from, to)" in rope,
           "rope: sneak-right-click ray-tests the aimed lamp body, not the whole cord")
-    check("? this.removeLampUnderCrosshair(serverLevel, player)" in rope
-          and ": this.cycleLampMode(serverLevel, player)" in rope,
-          "rope: empty right-click cycles the cord, sneak-right-click takes one lamp")
+    check("if (sneaking) {" in rope
+          and "return this.removeLampUnderCrosshair(serverLevel, player);" in rope
+          and "return this.cycleLampMode(serverLevel, player);" in rope,
+          "rope: sneak-right-click takes one lamp with any held item; empty right-click cycles")
+    check("player.isSecondaryUseActive()" in pick
+          and "|| player.isSecondaryUseActive()" in pick,
+          "rope: sneak makes the cord pickable even while holding a tool or the rope item")
     kb = rope.find("public void kill(ServerLevel level)")
     check(kb >= 0 and "discard" not in rope[kb:kb + 120] and "spawnAtLocation" not in rope[kb:kb + 120],
           "rope: kill() is a no-op so mob clearing cannot remove a tied cord")
