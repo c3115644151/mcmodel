@@ -1,17 +1,19 @@
+import math
 import tempfile
 import unittest
 from pathlib import Path
 
-from preview_item_icons import registered_item_ids
-from item_icon_preview import (FACE_VERTICES, face_is_front_facing,
-                               apply_alpha_cutout, tinted_water_sprite,
-                               load_sprite)
-from preview_item_icons import preview_model_ids
+from preview_item_icons import preview_model_ids, registered_item_ids
+from item_icon_proxy import VANILLA_BLOCK_GUI
+from item_icon_preview import (FACE_VERTICES, _mat_apply, apply_alpha_cutout,
+                               apply_root_transform, face_is_front_facing,
+                               gui_rotation_matrix, gui_screen_point, load_sprite,
+                               render_projected_icon, root_origin, tinted_water_sprite)
 from PIL import Image
 
 
 class RegisteredItemPreviewFilterTests(unittest.TestCase):
-    def test_preview_filter_uses_registered_item_ids_only(self):
+    def test_preview_filter_keeps_only_creative_tab_items(self):
         with tempfile.TemporaryDirectory() as temp:
             registry = Path(temp) / "src/main/java/com/pastoralhome/registry/ModItems.java"
             registry.parent.mkdir(parents=True)
@@ -20,10 +22,18 @@ class RegisteredItemPreviewFilterTests(unittest.TestCase):
                 'ITEMS.registerSimpleBlockItem("weather_vane", ModBlocks.WEATHER_VANE);\n'
                 'public static final DeferredItem<BlockItem> WHEELBARROW = '
                 'ITEMS.registerItem("wheelbarrow", WheelbarrowItem::new);\n'
-                '// model components must not be mistaken for items\n'
-                '// a model component, not a registered item: rug_surface_00\n',
+                'public static final DeferredItem<Item> WHEELBARROW_WHEEL = '
+                'ITEMS.registerSimpleItem("wheelbarrow_wheel");\n',
                 encoding="utf-8",
             )
+            tabs = Path(temp) / "src/main/java/com/pastoralhome/registry/ModCreativeTabs.java"
+            tabs.write_text(
+                'output.accept(ModItems.WEATHER_VANE.get());\n'
+                'output.accept(ModItems.WHEELBARROW.get());\n',
+                encoding="utf-8",
+            )
+            # A registered component that the tab never offers must stay out: the tab
+            # list, not the registry, decides what counts as an inventory icon.
             self.assertEqual(registered_item_ids(Path(temp)), {"weather_vane", "wheelbarrow"})
 
     def test_underside_projects_from_low_y_plane(self):
@@ -87,6 +97,66 @@ class WaterRenderingTests(unittest.TestCase):
                 "cases": [{"when": 1, "model": {"type": "minecraft:model", "model": "ns:full"}}],
                 "fallback": {"type": "minecraft:model", "model": "ns:empty"}}
         self.assertEqual(preview_model_ids(node), ["ns:empty"])
+
+
+
+
+class GuiProjectionTests(unittest.TestCase):
+    """The GUI icon camera has to be Minecraft's chain, not a hand-built basis."""
+
+    def test_yaw_225_puts_positive_x_and_z_on_the_left(self):
+        # ItemTransform rotates the model by yaw 225 and the item camera looks down
+        # -Z with +Y up, so screen x = (R*p).x = -cos45*(x+z). Building that basis by
+        # hand once gave +(x+z), which mirrored every asymmetric icon.
+        left_of_center, _ = gui_screen_point((12.0, 8.0, 8.0), (30.0, 225.0, 0.0))
+        self.assertLess(left_of_center[0], -1.0)
+        also_left, _ = gui_screen_point((8.0, 8.0, 12.0), (30.0, 225.0, 0.0))
+        self.assertLess(also_left[0], -1.0)
+
+    def test_up_is_negative_screen_y(self):
+        above, _ = gui_screen_point((8.0, 14.0, 8.0), (30.0, 225.0, 0.0))
+        self.assertLess(above[1], -1.0)
+
+    def test_rotation_matrix_matches_the_display_chain(self):
+        matrix = gui_rotation_matrix((0.0, 225.0, 0.0))
+        east = _mat_apply(matrix, (0.5, 0.0, 0.5))
+        self.assertAlmostEqual(east[0], -math.cos(math.radians(45)), places=6)
+
+    def test_root_transform_translation_is_in_blocks(self):
+        # A root transform's translation uses blocks, so [0, 1, 0] raises the model by
+        # a full 16 units; reading it as 1/16 blocks left such icons 16 units off.
+        moved = apply_root_transform((8.0, 0.0, 8.0), {"translation": [0, 1, 0]})
+        self.assertAlmostEqual(moved[1], 16.0, places=6)
+
+    def test_root_transform_origin_defaults_to_opposing_corner(self):
+        self.assertEqual(root_origin({}), (16.0, 16.0, 16.0))
+        self.assertEqual(root_origin({"origin": "center"}), (8.0, 8.0, 8.0))
+
+
+class RasterizerSamplingTests(unittest.TestCase):
+    def test_flat_panel_with_degenerate_uv_still_draws(self):
+        # Foliage and lattice panels export as zero-thickness planes whose UV rectangle
+        # collapses to one texel column. A per-quad perspective transform cannot invert
+        # that and dropped the face; barycentric sampling has no such singularity.
+        with tempfile.TemporaryDirectory() as temp:
+            sprite_path = Path(temp) / "panel.png"
+            Image.new("RGBA", (16, 16), (40, 160, 60, 255)).save(sprite_path)
+            model = {
+                "textures": {"panel": "pastoral_home:block/panel"},
+                "elements": [{
+                    "from": [8.0, 1.0, 1.0], "to": [8.0, 15.0, 15.0],
+                    "faces": {
+                        "east": {"uv": [4.0, 0.0, 4.0, 16.0], "texture": "#panel"},
+                        "west": {"uv": [4.0, 0.0, 4.0, 16.0], "texture": "#panel"},
+                    },
+                }],
+                "display": {"gui": dict(VANILLA_BLOCK_GUI)},
+            }
+            icon = render_projected_icon(model, lambda _ref: sprite_path,
+                                         tuple(VANILLA_BLOCK_GUI["scale"]),
+                                         tuple(VANILLA_BLOCK_GUI["rotation"]), size=64)
+            painted = sum(1 for value in icon.getchannel("A").get_flattened_data() if value)
+            self.assertGreater(painted, 0)
 
 
 if __name__ == "__main__":

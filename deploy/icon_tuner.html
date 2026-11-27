@@ -1,90 +1,159 @@
 <!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>GUI Icon Tuner</title>
 <style>
-:root{--bg:#1e1e1e;--panel:#2a2a2a;--line:#444;--text:#ddd;--accent:#6a9;--slot:#858585}
-*{box-sizing:border-box}body{margin:0;font:13px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--text);display:flex;height:100vh}
-#sidebar{width:270px;overflow-y:auto;border-right:1px solid var(--line);padding:8px;flex:none}
-#sidebar h1{font-size:14px;margin:4px 0 10px}
-#filter{width:100%;padding:5px;background:#333;color:var(--text);border:1px solid var(--line);border-radius:3px}
-#grid{margin-top:8px;display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
-.cell{aspect-ratio:1;background:var(--slot);border:2px solid transparent;cursor:pointer;position:relative;display:flex;align-items:center;justify-content:center}
-.cell img{width:100%;height:100%;image-rendering:pixelated}.cell.sel{border-color:var(--accent)}
-.cell .dot{position:absolute;top:1px;right:1px;width:6px;height:6px;background:var(--accent);border-radius:50%}
-.cell .lbl{position:absolute;bottom:0;left:0;right:0;font-size:8px;background:#000a;text-align:center;overflow:hidden;white-space:nowrap}
-#main{flex:1;display:flex;flex-direction:column;padding:12px;overflow-y:auto}
-#head{display:flex;align-items:center;gap:12px;margin-bottom:10px}#head h2{margin:0;font-size:18px}
-.badge{background:#888;color:#000;font-size:10px;padding:1px 5px;border-radius:8px}
-.row{display:flex;gap:16px;flex-wrap:wrap}.panel{background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:12px}
-#previewPanel{text-align:center}#slots{display:inline-grid;grid-template-columns:repeat(2,160px);gap:12px}
-.slotbox{background:var(--slot);width:160px;height:160px;display:flex;align-items:center;justify-content:center;position:relative}
-.slotbox img{image-rendering:pixelated}.slotbox .cap{position:absolute;bottom:2px;left:0;right:0;font-size:10px;color:#000;text-shadow:0 0 3px #fff}
-.slotbox.native{width:64px;height:64px;margin:48px}
-.controls label{display:block;margin:8px 0 3px;font-size:11px;color:#aaa}
-.controls input[type=range]{width:190px;vertical-align:middle}.controls .val{display:inline-block;width:48px;text-align:right;font-variant-numeric:tabular-nums}
-.controls select,.controls input[type=text],.controls textarea{width:240px;padding:4px;background:#333;color:var(--text);border:1px solid var(--line)}
-.controls textarea{height:50px}
-button{background:#3a3;color:#000;border:0;padding:7px 14px;border-radius:3px;cursor:pointer;font-weight:bold;margin-top:4px}
-button.ghost{background:#555;color:var(--text)}
-#report{font-family:monospace;font-size:11px;white-space:pre-wrap;color:#9c9;margin-top:8px;text-align:left}
-#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#000d;padding:8px 16px;border-radius:4px;opacity:0;transition:opacity .2s}
+:root{--bg:#18181b;--panel:#232327;--panel2:#2d2d32;--line:#3a3a42;--text:#e4e4e7;--muted:#9a9aa3;--accent:#5eead4;--accent2:#2dd4bf;--slot:#8a8a8f}
+*{box-sizing:border-box}
+body{margin:0;font:13px/1.5 -apple-system,"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--text);height:100vh;display:grid;grid-template-rows:auto 1fr}
+header{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.3px}
+header .stat{color:var(--muted);font-size:12px}
+header .spacer{flex:1}
+header button{background:var(--accent);color:#06231f;border:0;border-radius:5px;padding:6px 14px;font-weight:600;cursor:pointer;font-size:12px}
+header button:hover{background:var(--accent2)}
+#body{display:grid;grid-template-columns:var(--sidebar,300px) 5px 1fr;min-height:0}
+aside{border-right:0;display:flex;flex-direction:column;min-height:0;background:var(--panel)}
+#splitter{cursor:col-resize;background:var(--line);position:relative;transition:background .15s}
+#splitter:hover,#splitter.drag{background:var(--accent)}
+#splitter::after{content:"";position:absolute;inset:0 -3px}
+aside .search{padding:10px;border-bottom:1px solid var(--line)}
+aside .searchbar{display:flex;gap:8px;align-items:center}
+aside input[type=text]{flex:1;min-width:0;padding:7px 9px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:5px;font-size:12px}
+aside .cols{display:flex;align-items:center;gap:3px;color:var(--muted);font-size:10px;white-space:nowrap}
+aside .cols button{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:3px;width:20px;height:24px;cursor:pointer;font-size:13px;line-height:1}
+#grid{overflow-y:auto;padding:8px;display:grid;grid-template-columns:repeat(var(--cols,2),minmax(0,1fr));gap:8px;align-content:start}
+.cell{position:relative;width:100%;height:0;padding-bottom:calc(100% - 4px);background:var(--slot);border:2px solid transparent;border-radius:3px;cursor:pointer;overflow:hidden;transition:border-color .12s}
+.cell:hover{border-color:var(--muted)}
+.cell.sel{border-color:var(--accent)}
+.cell img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;image-rendering:pixelated;display:block}
+.cell .tag{position:absolute;bottom:0;left:0;right:0;font-size:9px;background:linear-gradient(transparent,#000e);color:#fff;text-align:center;padding:5px 1px 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cell .dot{position:absolute;top:3px;right:3px;width:7px;height:7px;background:var(--accent);border-radius:50%;box-shadow:0 0 0 1px #000}
+main{padding:18px 22px;overflow-y:auto;display:grid;grid-template-columns:minmax(360px,1fr) 340px;gap:22px;align-content:start}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px}
+.panel h2{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:0 0 12px;font-weight:600}
+.stage{display:flex;gap:16px;align-items:flex-start;justify-content:center}
+.tile{text-align:center}
+.tile .frame{width:180px;height:180px;background:var(--slot);border:1px solid var(--line);border-radius:4px;display:flex;align-items:center;justify-content:center;position:relative}
+.tile .frame img{image-rendering:pixelated;display:block}
+.tile .frame.native img{image-rendering:pixelated}
+.tile .cap{font-size:11px;color:var(--muted);margin-top:6px}
+.badge{display:inline-block;font-size:10px;padding:2px 8px;border-radius:10px;background:#3a3a42;color:var(--muted);margin-left:8px}
+.badge.on{background:var(--accent);color:#06231f}
+.refbar{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
+.refbar summary{cursor:pointer;font-size:12px;color:var(--muted);user-select:none}
+.refbar .refbody{padding-top:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+#refStack{width:180px;height:180px;background:var(--slot);position:relative;display:none;border-radius:4px;flex:none}
+#refStack img{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated}
+#refImg{opacity:.5}
+.metrics{font-family:ui-monospace,monospace;font-size:11px;color:var(--accent);background:var(--bg);border-radius:5px;padding:10px 12px;margin-top:14px;white-space:pre-wrap;line-height:1.6}
+.ctl label{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin:14px 0 5px}
+.ctl label b{color:var(--text);font-variant-numeric:tabular-nums;font-weight:500}
+.ctl input[type=range]{width:100%;accent-color:var(--accent)}
+.ctl .dual{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.ctl select,.ctl textarea{width:100%;padding:7px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:5px;font:inherit;font-size:12px}
+.ctl textarea{height:56px;resize:vertical}
+.ctl .row{display:flex;gap:8px;margin-top:16px}
+.ctl button{flex:1;padding:8px;border:0;border-radius:5px;font-weight:600;cursor:pointer;font-size:12px}
+.primary{background:var(--accent);color:#06231f}
+.ghost{background:var(--panel2);color:var(--text);border:1px solid var(--line)!important}
+#toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#000e;color:#fff;padding:9px 18px;border-radius:6px;font-size:12px;opacity:0;transition:opacity .2s;pointer-events:none}
 #toast.show{opacity:1}
+@media(max-width:1050px){main{grid-template-columns:1fr}}
 </style></head><body>
-<div id="sidebar"><h1>GUI Icon Tuner</h1><input id="filter" placeholder="过滤图标名…"><div id="grid"></div></div>
-<div id="main"><div id="head"><h2 id="title">选择一个图标</h2><span id="badge" class="badge"></span></div>
-<div class="row"><div class="panel" id="previewPanel"><div id="slots">
-<div class="slotbox"><img id="big" width="160" height="160"><div class="cap">放大 10×</div></div>
-<div class="slotbox native"><img id="native" width="64" height="64"><div class="cap">游戏 4×</div></div>
+<header>
+<h1>GUI Icon Tuner</h1><span class="stat" id="stat"></span><span class="spacer"></span>
+<button onclick="saveAll()">保存并同步全部</button>
+</header>
+<div id="body">
+<aside>
+<div class="search"><div class="searchbar"><input type="text" id="filter" placeholder="搜索图标名…"><span class="cols"><button onclick="setCols(-1)" title="减少列数">−</button><span id="colLabel">2</span>列<button onclick="setCols(1)" title="增加列数">+</button></span></div></div>
+<div id="grid"></div>
+</aside>
+<div id="splitter"></div>
+<main>
+<section class="panel">
+<h2>预览 <span class="badge" id="badge">默认</span></h2>
+<div class="stage">
+<div class="tile"><div class="frame"><img id="big" width="180" height="180"></div><div class="cap">放大预览 · 11×</div></div>
+<div class="tile"><div class="frame" style="width:96px;height:96px"><img id="native" width="64" height="64"></div><div class="cap">游戏原尺寸 · 4×</div></div>
 </div>
-<div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px;text-align:left">
-<button class="ghost" style="font-size:11px;padding:4px 8px" onclick="toggleRef(this)">▸ 游戏截图对照</button>
-<div id="refControls" style="display:none;margin-top:8px">
-<input type="file" id="refFile" accept="image/png" onchange="loadRef(event)" style="font-size:11px">
-<label style="font-size:11px;color:#aaa;display:inline-block;margin-left:8px">透明度 <span id="v_refop">50%</span></label>
-<input type="range" id="refop" min="0" max="100" value="50" oninput="$('v_refop').textContent=this.value+'%';$('refimg').style.opacity=this.value/100" style="width:120px;vertical-align:middle">
-<div id="refWrap" style="display:none;position:relative;margin-top:6px;width:160px;height:160px;background:var(--slot)">
-<img id="refbase" width="160" height="160" style="position:absolute;top:0;left:0;image-rendering:pixelated">
-<img id="refimg" width="160" height="160" style="position:absolute;top:0;left:0;opacity:.5;image-rendering:pixelated">
+<details class="refbar"><summary>▸ 游戏截图对照（叠加找差异）</summary>
+<div class="refbody">
+<input type="file" id="refFile" accept="image/png" onchange="loadRef(event)" style="font-size:11px;color:var(--muted)">
+<label style="font-size:11px;color:var(--muted)">透明度 <span id="vRef">50%</span></label>
+<input type="range" id="refop" min="0" max="100" value="50" oninput="$('vRef').textContent=this.value+'%';$('refImg').style.opacity=this.value/100" style="width:100px;accent-color:var(--accent)">
+<div id="refStack"><img id="refBase"><img id="refImg"></div>
+</div></details>
+<div class="metrics" id="metrics"></div>
+</section>
+<section class="panel ctl" id="controls">
+<h2>微调参数</h2>
+<label>目标尺寸 <span><b id="vT">15.7</b> px</span></label>
+<input type="range" id="target" min="2" max="16" step="0.1">
+<div class="dual">
+<div><label>水平 X <span><b id="vX">0.00</b></span></label><input type="range" id="ox" min="-4" max="4" step="0.05"></div>
+<div><label>垂直 Y <span><b id="vY">0.00</b></span></label><input type="range" id="oy" min="-4" max="4" step="0.05"></div>
 </div>
+<label>额外朝向 yaw <span><b id="vR">0</b>°</span></label>
+<input type="range" id="yaw" min="-180" max="180" step="1">
+<label>对齐方式</label>
+<select id="anchor"><option value="auto">自动（按投影高度）</option><option value="center">居中</option><option value="floor">贴底</option></select>
+<label>替换源模型</label>
+<select id="source"><option value="">（保持默认）</option></select>
+<label>备注 <span style="font-size:10px">struct: 开头 = 结构问题需改脚本</span></label>
+<textarea id="note" placeholder="例：struct: 缺少左侧扶手"></textarea>
+<div class="row">
+<button class="primary" onclick="save()">保存此项</button>
+<button class="ghost" onclick="reset()">重置</button>
 </div>
-</div>
-<div id="report"></div></div>
-<div class="panel controls" id="controls" style="display:none">
-<label>目标尺寸 target_px <span class="val" id="v_target"></span></label><input type="range" id="target" min="2" max="16" step="0.1"><br>
-<label>水平偏移 offset_x (+右) <span class="val" id="v_ox"></span></label><input type="range" id="ox" min="-4" max="4" step="0.05"><br>
-<label>垂直偏移 offset_y (+下) <span class="val" id="v_oy"></span></label><input type="range" id="oy" min="-4" max="4" step="0.05"><br>
-<label>朝向 yaw (度) <span class="val" id="v_yaw"></span></label><input type="range" id="yaw" min="-180" max="180" step="1"><br>
-<label>对齐 anchor</label><select id="anchor"><option value="auto">自动</option><option value="center">居中</option><option value="floor">贴底</option></select><br>
-<label>替换源模型 source</label><select id="source"><option value="">(默认)</option></select><br>
-<label>备注 note（struct: 开头=结构问题，需改脚本）</label><textarea id="note"></textarea><br>
-<button onclick="save()">保存 override</button> <button class="ghost" onclick="reset()">重置该项</button> <button class="ghost" onclick="saveAll()">保存全部</button>
-</div></div></div><div id="toast"></div>
+</section>
+</main></div>
+<div id="toast"></div>
 <script>
 let items=[],overrides={},selected=null,sources=[];
 const $=x=>document.getElementById(x);
-function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1500)}
-function buildGrid(){const q=$('filter').value.toLowerCase();$('grid').innerHTML='';items.filter(i=>i.id.toLowerCase().includes(q)).forEach(i=>{
+function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),1800)}
+function buildGrid(){
+const q=$('filter').value.toLowerCase().trim();const g=$('grid');g.innerHTML='';
+items.filter(i=>i.id.toLowerCase().includes(q)).forEach(i=>{
 const c=document.createElement('div');c.className='cell'+(i.id===selected?' sel':'');
-c.innerHTML='<img src="/api/thumb?item='+encodeURIComponent(i.id)+'" loading=lazy><div class="lbl">'+i.id+'</div>'+(overrides[i.id]?'<div class="dot"></div>':'');
-c.onclick=()=>select(i.id);$('grid').appendChild(c)})}
-async function loadItems(){const d=await(await fetch('/api/items')).json();items=d.items;buildGrid()}
+c.innerHTML='<img src="/api/thumb?item='+encodeURIComponent(i.id)+'"><div class="tag">'+i.id+'</div>'+(overrides[i.id]?'<div class="dot"></div>':'');
+c.onclick=()=>select(i.id);c.title=i.id;g.appendChild(c)})}
+async function refresh(){await loadOverrides();const d=await(await fetch('/api/items')).json();items=d.items;$('stat').textContent=items.length+' 个物品 · '+Object.keys(overrides).length+' 项已调';buildGrid()}
 async function loadOverrides(){const d=await(await fetch('/api/overrides')).json();overrides=d.items||{}}
 async function loadSources(){const d=await(await fetch('/api/source-options')).json();sources=d.options||[];const s=$('source');sources.forEach(o=>{const p=document.createElement('option');p.value=o;p.textContent=o.split('/').pop();s.appendChild(p)})}
 function candidate(){return{target_px:+$('target').value,offset_x:+$('ox').value,offset_y:+$('oy').value,yaw:+$('yaw').value,anchor:$('anchor').value,source:$('source').value,note:$('note').value}}
 function fill(p){$('target').value=p.target_px??15.7;$('ox').value=p.offset_x??0;$('oy').value=p.offset_y??0;$('yaw').value=p.yaw??0;$('anchor').value=p.anchor??'auto';$('source').value=p.source??'';$('note').value=p.note??'';sync()}
-function sync(){$('v_target').textContent=(+$('target').value).toFixed(1);$('v_ox').textContent=(+$('ox').value).toFixed(2);$('v_oy').textContent=(+$('oy').value).toFixed(2);$('v_yaw').textContent=(+$('yaw').value).toFixed(0)}
-let deb;function sched(){clearTimeout(deb);deb=setTimeout(preview,120)}
+function sync(){$('vT').textContent=(+$('target').value).toFixed(1);$('vX').textContent=(+$('ox').value).toFixed(2);$('vY').textContent=(+$('oy').value).toFixed(2);$('vR').textContent=(+$('yaw').value).toFixed(0)}
+let deb;function sched(){clearTimeout(deb);deb=setTimeout(preview,100)}
 async function preview(){if(!selected)return;const c=candidate();const r=await fetch('/api/preview?item='+encodeURIComponent(selected)+'&candidate='+encodeURIComponent(JSON.stringify(c)));const d=await r.json();
-if(d.error){$('report').textContent='ERROR: '+d.error;return}$('big').src='data:image/png;base64,'+d.png;$('native').src='data:image/png;base64,'+d.png;$('refbase').src='data:image/png;base64,'+d.png;
-const p=d.report;$('report').textContent='target='+p.target_px+'px  anchor='+(p.floor_anchor?'floor':'center')+'\nbounds='+JSON.stringify(p.bounds)+'\noffset=('+p.offset_x+','+p.offset_y+') yaw='+p.yaw}
-async function select(id){selected=id;$('title').textContent=id;$('controls').style.display='block';const o=overrides[id]||{};
+if(d.error){$('metrics').textContent='ERROR: '+d.error;return}
+const url='data:image/png;base64,'+d.png;$('big').src=url;$('native').src=url;$('refBase').src=url;
+const p=d.report;$('metrics').textContent='target  '+p.target_px+' px      anchor  '+(p.floor_anchor?'floor':'center')+'   |   bounds '+JSON.stringify(p.bounds)+'   |   offset ('+p.offset_x+','+p.offset_y+')  yaw '+p.yaw}
+async function select(id){
+selected=id;const o=overrides[id]||{};
 fill({target_px:o.target_px??15.7,offset_x:o.offset_x??0,offset_y:o.offset_y??0,yaw:o.yaw??0,anchor:o.anchor??'auto',source:o.source??'',note:o.note??''});
-$('badge').textContent=overrides[id]?'已覆盖':'默认';$('badge').style.background=overrides[id]?'#4a4':'#888';buildGrid();await preview()}
+const on=!!overrides[id];$('badge').textContent=on?'已调':'默认';$('badge').className='badge'+(on?' on':'');
+buildGrid();await preview()}
 ['target','ox','oy','yaw'].forEach(k=>$(k).addEventListener('input',()=>{sync();sched()}));
 ['anchor','source'].forEach(k=>$(k).addEventListener('change',sched));
-async function save(){if(!selected)return;overrides[selected]=candidate();const r=await fetch('/api/overrides',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:overrides})});const d=await r.json();toast(d.error?'ERR '+d.error:'已保存 '+selected);buildGrid()}
-async function saveAll(){await save();toast('全部 override 已写入 item_icon_overrides.json')}
-async function reset(){if(!selected)return;delete overrides[selected];await fetch('/api/overrides',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:overrides})});fill({target_px:15.7,offset_x:0,offset_y:0,yaw:0,anchor:'auto',source:'',note:''});buildGrid();await preview();toast('已重置 '+selected)}
-function toggleRef(btn){const c=$('refControls');const open=c.style.display==='none';c.style.display=open?'block':'none';btn.textContent=(open?'▾':'▸')+' 游戏截图对照'}
-function loadRef(ev){const f=ev.target.files[0];if(!f)return;const rd=new FileReader();rd.onload=()=>{$('refimg').src=rd.result;$('refWrap').style.display='block';$('refbase').src=$('big').src};rd.readAsDataURL(f)}
+async function save(){
+if(!selected)return;overrides[selected]=candidate();
+const r=await fetch('/api/overrides',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:overrides})});const d=await r.json();
+if(d.error){toast('ERR '+d.error);return}
+toast('已保存并同步 '+selected);await refresh();await select(selected)}
+async function saveAll(){if(Object.keys(overrides).length){await save();toast('全部已同步到 proxy，可运行生成器落盘')}else toast('暂无 override')}
+async function reset(){if(!selected)return;delete overrides[selected];
+await fetch('/api/overrides',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:overrides})});
+toast('已重置 '+selected);await refresh();await select(selected)}
+function loadRef(ev){const f=ev.target.files[0];if(!f)return;const rd=new FileReader();rd.onload=()=>{$('refImg').src=rd.result;$('refStack').style.display='block'};rd.readAsDataURL(f)}
 $('filter').addEventListener('input',buildGrid);
-(async()=>{await loadOverrides();await loadSources();await loadItems();if(items.length)await select(items[0].id)})();
+// Sidebar width + column count are persisted in localStorage.
+let sidebarW=+(localStorage.getItem('it_sidebar')||340), cols=+(localStorage.getItem('it_cols')||2);
+function applyLayout(){document.documentElement.style.setProperty('--sidebar',sidebarW+'px');document.documentElement.style.setProperty('--cols',cols);$('colLabel').textContent=cols}
+function setCols(d){cols=Math.max(2,Math.min(6,cols+d));localStorage.setItem('it_cols',cols);applyLayout()}
+(function(){const sp=$('splitter');let dragging=false;
+sp.addEventListener('mousedown',e=>{dragging=true;sp.classList.add('drag');document.body.style.cursor='col-resize';e.preventDefault()});
+window.addEventListener('mousemove',e=>{if(!dragging)return;sidebarW=Math.max(180,Math.min(720,e.clientX));applyLayout()});
+window.addEventListener('mouseup',()=>{if(!dragging)return;dragging=false;sp.classList.remove('drag');document.body.style.cursor='';localStorage.setItem('it_sidebar',sidebarW)})})();
+applyLayout();
+(async()=>{await loadSources();await refresh();if(items.length)await select(items[0].id)})();
 </script></body></html>

@@ -33,6 +33,7 @@ from config import resolve
 from item_icon_proxy import VANILLA_BLOCK_GUI, collect_model_ids
 from item_icon_preview import (project_gui_translation, render_projected_icon,
                                visible_projected_measurements)
+from item_ids import official_items
 from normalize_item_icons import load_model_with_parent, resolve_model, resolve_texture
 
 
@@ -53,18 +54,14 @@ def preview_model_ids(gui_node: dict) -> list[str]:
 
 
 def registered_item_ids(root: Path) -> set[str]:
-    """Item ids actually registered in ModItems - the honest inventory-item set.
+    """Item ids the creative tab offers - the honest inventory-item set.
 
-    item/*.json also contains model components (bulletin variants, rug_surface
-    tiles, globe/wheelbarrow render parts, empty_* states) that are never held as
-    items. They must not be listed as if they were separate inventory icons.
+    Registration alone is not enough: ModItems also registers internal render parts
+    (globe_sphere_render, wheelbarrow_wheel, weather_vane_base, ...) and the bulletin
+    page variants. Those are components the player never holds, so listing them next
+    to real furniture misrepresents the icon set. The creative tab is the line.
     """
-    registry = root / "src/main/java/com/pastoralhome/registry/ModItems.java"
-    if not registry.is_file():
-        return set()
-    source = registry.read_text(encoding="utf-8")
-    return set(re.findall(
-        r'register(?:SimpleBlockItem|Item|BlockItem)\s*\(\s*"([a-z0-9_]+)"', source))
+    return set(official_items(root))
 
 
 def main() -> int:

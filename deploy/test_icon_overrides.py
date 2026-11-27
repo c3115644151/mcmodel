@@ -36,12 +36,12 @@ class IconOverridesTests(unittest.TestCase):
 
     def test_screen_offset_inverse_projection(self):
         # A geometry translation must land on the requested screen offset after
-        # the vanilla GUI camera projects it. sx=cos45*(x+z), so dx=dz yields
-        # sx=2*cos45*dx; sy=-cos30*dy, so dy=-sy/cos30.
+        # the vanilla GUI camera projects it. The yaw-225 camera puts screen x at
+        # -(x+z)*cos45, so dx=dz yields sx=-2*cos45*dx; sy=-cos30*dy.
         scale = VANILLA_BLOCK_GUI["scale"][0]
         for ox, oy in [(2.0, 0.0), (0.0, 3.0), (-1.5, 2.5)]:
             dx, dy, dz = screen_offset_to_geometry(ox, oy, scale)
-            sx = math.cos(math.radians(45)) * (dx + dz) * scale
+            sx = -math.cos(math.radians(45)) * (dx + dz) * scale
             sy = -(math.cos(math.radians(30)) * dy) * scale
             self.assertAlmostEqual(sx, ox, places=5)
             self.assertAlmostEqual(sy, oy, places=5)

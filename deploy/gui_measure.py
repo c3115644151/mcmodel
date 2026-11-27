@@ -91,6 +91,11 @@ def apply_rotation(p, rot, element_origin=None):
 
 
 def corners(model):
+    from item_icon_preview import apply_root_transform
+
+    # NeoForge 模型根的 transform 烘焙进几何，必须在取样包围盒时一起算，
+    # 否则 fit 会把 [0,1,0]（整整一格）的位移当成 0，图标在游戏里被顶出格子。
+    root_transform = model.get('transform')
     pts = []
     for e in model.get('elements', []):
         f, t = e['from'], e['to']
@@ -102,17 +107,18 @@ def corners(model):
                     p = (dx, dy, dz)
                     if rot:
                         p = apply_rotation(p, rot, origin)
-                    pts.append(p)
+                    pts.append(apply_root_transform(p, root_transform))
     return pts
 
 
 def project_iso(p):
     """MC GUI 等轴测正交投影, camera rotation [30,225,0]:
     屏幕 x 向右, y 向下 (MC 屏幕坐标)。225° yaw 让相机从 north(-Z) 侧看,
-    看到模型正面 (家具正面画在 north 面) 与 east(+X) 侧面:
-      sx = (x + z) * cos(45)
+    看到模型正面 (家具正面画在 north 面) 与 east(+X) 侧面。yaw 后 x 分量是
+    -cos45*(x+z)，所以 sx 取负号:
+      sx = -(x + z) * cos(45)
       sy = -(y * cos(30) - ((x - z) / sqrt2) * sin(30))   # y 轴取反 (MC 屏幕向下)"""
-    sx = (p[0] + p[2]) * math.cos(math.radians(45))
+    sx = -(p[0] + p[2]) * math.cos(math.radians(45))
     sy = -(p[1] * math.cos(math.radians(30)) - ((p[0] - p[2]) / math.sqrt(2)) * math.sin(math.radians(30)))
     return (sx, sy)
 

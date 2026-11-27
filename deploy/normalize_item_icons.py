@@ -35,6 +35,7 @@ from item_icon_proxy import (
     ITEM_ICON_MANIFEST,
     TRANSFORM_CARRIER_MODELS,
     VANILLA_BLOCK_GUI,
+    bake_root_transform,
     collect_model_ids,
     fit_gui_projection,
     geometry_bounds,
@@ -46,6 +47,17 @@ from item_icon_proxy import (
     wrap_gui_only,
 )
 from item_icon_preview import visible_projected_measurements
+
+
+def bake_root_sources(model_sources):
+    """Bake translation-only root transforms before sizing and fitting.
+
+    A root transform shifts the geometry when the model is baked, so the source box,
+    the fit and the written proxy must all be measured after that shift; leaving the
+    key in place also pushed element coordinates past Minecraft's [-16, 32] limit.
+    """
+    return [(referenced_id, source_id, bake_root_transform(model), path)
+            for referenced_id, source_id, model, path in model_sources]
 
 
 def mirror_path(root: Path, path: Path) -> None:
@@ -128,27 +140,40 @@ def resolve_texture(root: Path, texture_id: str) -> Path | None:
 
 
 def load_model_with_parent(path: Path, assets_root: Path, mod_id: str, visited=None) -> dict | None:
+    """Resolve a model the way the game does, including what a parent still supplies.
+
+    A child that declares elements is NOT self-contained: Minecraft keeps inheriting
+    the parent's display transforms and, on NeoForge, its root "transform". Returning
+    such a child early made the offline preview ignore a parent root transform that
+    the game applies, so proxy icons carrying a block parent were drawn 16 units away
+    from what the player actually sees.
+    """
     visited = visited or set()
     path = path.resolve()
     if path in visited or not path.is_file():
         return None
     visited.add(path)
     model = json.loads(path.read_text(encoding="utf-8"))
-    if model.get("elements"):
-        return model
     parent = model.get("parent")
+    inherited = None
     if parent:
         parent_path = resolve_model(parent, assets_root, mod_id)
         if parent_path:
             inherited = load_model_with_parent(parent_path, assets_root, mod_id, visited)
-            if inherited:
-                merged = deepcopy(inherited)
-                merged.update(model)
-                merged["elements"] = inherited.get("elements", [])
-                merged["textures"] = {**inherited.get("textures", {}), **model.get("textures", {})}
-                return merged
-    return model
 
+    if inherited is None:
+        return model if model.get("elements") else None
+
+    merged = deepcopy(inherited)
+    merged.update({key: value for key, value in model.items() if key not in ("textures", "display")})
+    merged["elements"] = model.get("elements") or inherited.get("elements", [])
+    merged["textures"] = {**inherited.get("textures", {}), **model.get("textures", {})}
+    # ItemTransforms merge per context: the child's gui wins, the rest come from the parent.
+    merged["display"] = {**inherited.get("display", {}), **model.get("display", {})}
+    # A root transform is inherited whole; the child only overrides it by declaring one.
+    if "transform" not in model and "transform" in inherited:
+        merged["transform"] = inherited["transform"]
+    return merged
 
 def source_model_id(model_id: str, assets_root: Path, mod_id: str) -> str:
     """Unwrap a prior proxy so repeated normalization remains deterministic."""
@@ -252,13 +277,13 @@ def main() -> int:
         # the fallback as well produced proxies nobody references (a rug whose
         # fallback model is a child of its GUI model left a dead variant behind).
         model_ids = collect_model_ids(gui_tree)
-        model_sources = collect_model_sources(model_ids, assets_root, mod_id)
+        model_sources = bake_root_sources(collect_model_sources(model_ids, assets_root, mod_id))
         if not model_sources:
             # A GUI case that only wraps a transform carrier has nothing to normalize;
             # borrow the held/world model so the slot is not left empty.
             model_ids = list(dict.fromkeys(
                 model_ids + collect_model_ids(original_tree.get("fallback", {}))))
-            model_sources = collect_model_sources(model_ids, assets_root, mod_id)
+            model_sources = bake_root_sources(collect_model_sources(model_ids, assets_root, mod_id))
         if not model_sources:
             report.append({"item": item_id, "status": "skipped_no_local_geometry", "models": model_ids})
             continue
@@ -267,7 +292,7 @@ def main() -> int:
         source_override = overrides.get(item_id, {}).get("source")
         if source_override:
             model_ids = [source_override]
-            model_sources = collect_model_sources(model_ids, assets_root, mod_id)
+            model_sources = bake_root_sources(collect_model_sources(model_ids, assets_root, mod_id))
             if not model_sources:
                 report.append({"item": item_id, "status": "skipped_source_override", "models": model_ids})
                 continue
@@ -346,7 +371,11 @@ def main() -> int:
                 else:
                     report.append({"item": item_id, "status": "skipped_offset", "models": [source_id]})
             normalized["gui_fit"] = fitted
-            proxy["parent"] = source_id
+            # A baked root transform must not be inherited again from the source model.
+            if proxy.pop("__root_baked__", None):
+                proxy["parent"] = "minecraft:block/block"
+            else:
+                proxy["parent"] = source_id
             proxy_path = assets_root / "models" / "item_icons" / item_id / f"variant_{variant_index}.json"
             replacements[referenced_id] = proxy_model_id
             normalized_variants.append((proxy_path, proxy, normalized, source_id, proxy_model_id))

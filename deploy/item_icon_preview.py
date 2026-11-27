@@ -40,6 +40,14 @@ GUI_VIEW_DIR = (1.0, math.sqrt(2.0) * math.tan(math.radians(30.0)), -1.0)
 # 混出白色半透明锯齿，和游戏里的硬边不一致。
 ALPHA_CUTOUT = 128
 
+# Minecraft 在烘焙模型时把方向明暗直接乘进 quad 顶点色（FaceBakery），GUI 物品
+# 渲染沿用烘焙结果，所以图标上的明暗与光照/天空光无关，是固定的方向常量：
+# up 1.0、down 0.5、north/south 0.8、east/west 0.6。南北、东西同值——预览原先
+# 用了南北 0.78/0.88、东西 0.68/0.92 的不对称手调值，那是把离线的光照补偿混进了
+# 明暗系数，和游戏渲染对不上。
+FACE_SHADE = {"up": 1.0, "down": 0.5, "north": 0.8, "south": 0.8,
+              "west": 0.6, "east": 0.6}
+
 
 def apply_alpha_cutout(image: Image.Image) -> Image.Image:
     """把纹理面的 alpha 硬裁成 0 或 255，模拟 ALPHA_CUTOUT 0.5。"""
@@ -62,13 +70,113 @@ def _face_outward_normal(element: dict, face_name: str):
     return (nx / mag, ny / mag, nz / mag)
 
 
+ROOT_ORIGIN_DEFAULTS = {
+    "corner": (0.0, 0.0, 0.0),
+    "center": (8.0, 8.0, 8.0),
+    "opposing-corner": (16.0, 16.0, 16.0),
+}
+
+
+def root_origin(transform):
+    """Root transform origin in model units; defaults to the opposing corner."""
+    origin = transform.get("origin", "opposing-corner")
+    if isinstance(origin, str):
+        return ROOT_ORIGIN_DEFAULTS.get(origin, ROOT_ORIGIN_DEFAULTS["opposing-corner"])
+    return tuple(float(value) * 16.0 for value in origin)
+
+
+def _root_axis_rotations(value):
+    if not value:
+        return []
+    if isinstance(value, dict):
+        return [value]
+    return list(value)
+
+
+def _rotate_about_axis(point, axis, degrees):
+    angle = math.radians(float(degrees))
+    cosine, sine = math.cos(angle), math.sin(angle)
+    x, y, z = point
+    if axis == "x":
+        return (x, y * cosine - z * sine, y * sine + z * cosine)
+    if axis == "y":
+        return (x * cosine + z * sine, y, -x * sine + z * cosine)
+    return (x * cosine - y * sine, x * sine + y * cosine, z)
+
+
+def apply_root_transform(point, transform):
+    """Apply a NeoForge model root transform ("transform" at the model root).
+
+    The entries are applied in the documented order - translation, left rotation,
+    scale, right rotation - composed about the transform origin, and the result is
+    baked into the geometry *before* the item display transform. The translation is
+    given in blocks rather than 1/16 blocks, so [0, 1, 0] raises the whole model by
+    a full block; ignoring it drew such icons 16 units off and left the game's icon
+    clipped to one corner of the slot.
+    """
+    if not transform:
+        return point
+    origin = root_origin(transform)
+    translation = transform.get("translation", (0.0, 0.0, 0.0))
+    local = (point[0] - origin[0] + float(translation[0]) * 16.0,
+             point[1] - origin[1] + float(translation[1]) * 16.0,
+             point[2] - origin[2] + float(translation[2]) * 16.0)
+    for entry in _root_axis_rotations(transform.get("rotation") or transform.get("left_rotation")):
+        for axis, degrees in entry.items():
+            local = _rotate_about_axis(local, str(axis).lower(), degrees)
+    scale = transform.get("scale", (1.0, 1.0, 1.0))
+    local = (local[0] * float(scale[0]), local[1] * float(scale[1]), local[2] * float(scale[2]))
+    for entry in _root_axis_rotations(transform.get("right_rotation") or transform.get("post_rotation")):
+        for axis, degrees in entry.items():
+            local = _rotate_about_axis(local, str(axis).lower(), degrees)
+    return (local[0] + origin[0], local[1] + origin[1], local[2] + origin[2])
+
+
+def _mat_mul(a, b):
+    return tuple(tuple(sum(a[row][k] * b[k][col] for k in range(3)) for col in range(3))
+                 for row in range(3))
+
+
+def _mat_apply(matrix, vector):
+    return tuple(sum(matrix[row][k] * vector[k] for k in range(3)) for row in range(3))
+
+
+def gui_rotation_matrix(rotation):
+    """ItemTransform rotation as Rx * Ry * Rz, matching Quaternionf.rotationXYZ."""
+    rx, ry, rz = (math.radians(float(value)) for value in rotation)
+    cx, sx = math.cos(rx), math.sin(rx)
+    cy, sy = math.cos(ry), math.sin(ry)
+    cz, sz = math.cos(rz), math.sin(rz)
+    rotate_x = ((1.0, 0.0, 0.0), (0.0, cx, -sx), (0.0, sx, cx))
+    rotate_y = ((cy, 0.0, sy), (0.0, 1.0, 0.0), (-sy, 0.0, cy))
+    rotate_z = ((cz, -sz, 0.0), (sz, cz, 0.0), (0.0, 0.0, 1.0))
+    return _mat_mul(rotate_x, _mat_mul(rotate_y, rotate_z))
+
+
+def gui_screen_point(point, rotation):
+    """Project one model point the way the game draws a GUI item.
+
+    ItemTransform.apply translates, rotates around X, Y then Z, scales, and centers
+    the unit cube; the GUI item camera then looks down -Z with +Y up. So screen X is
+    the rotated X and screen Y is minus the rotated Y - not a hand-built isometric
+    basis. Building that basis by hand picked the mirrored handedness (screen X came
+    out as +(x+z) instead of -(x+z) after the 225 degree yaw), which reflected every
+    asymmetric model left-to-right against the real icon.
+    """
+    matrix = gui_rotation_matrix(rotation)
+    normalized = ((point[0] - 8.0) / 16.0, (point[1] - 8.0) / 16.0, (point[2] - 8.0) / 16.0)
+    rotated = _mat_apply(matrix, normalized)
+    return (rotated[0] * 16.0, -rotated[1] * 16.0), rotated[2]
+
+
 def face_is_front_facing(element: dict, face_name: str, gui_rotation) -> bool:
     """按 Minecraft 的背面剔除规则判断这个面在 GUI 相机下是否可见。"""
     normal = _face_outward_normal(element, face_name)
     if normal is None:
         return True
-    rotated = rotate_for_display(normal, gui_rotation)
-    return sum(rotated[i] * GUI_VIEW_DIR[i] for i in range(3)) > 1e-6
+    # 相机沿 -Z 看，旋转后法线 z 为正的面才朝向相机。
+    rotated = _mat_apply(gui_rotation_matrix(gui_rotation), normal)
+    return rotated[2] > 1e-6
 
 
 def load_sprite(path: Path, frame: int = 0) -> Image.Image | None:
@@ -221,15 +329,18 @@ def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | 
                          depth_buffer: bool | None = None,
                          pixels_per_unit: float | None = None,
                          projection_offset: tuple[float, float] = (0.0, 0.0),
-                         camera_distance: float = 48.0) -> Image.Image:
+                         camera_distance: float = 48.0,
+                         face_shade: dict[str, float] | None = None) -> Image.Image:
     """Render a textured isometric icon approximation for visual batch QA.
 
     Uses source face UVs, texture alpha, an orthographic GUI projection, sorted
     cuboid faces, and simple block-face shading. It is deliberately a lightweight
     preview, not a replacement for Minecraft's GPU renderer.
     """
-    face_shade = {"up": 1.0, "down": 0.55, "north": 0.78, "south": 0.88, "west": 0.68, "east": 0.92}
+    if face_shade is None:
+        face_shade = FACE_SHADE
     quads = []
+    offset_for_buffer = projection_offset
     for element in model.get("elements", []):
         for face_name, face in element.get("faces", {}).items():
             if face_name not in FACE_VERTICES or not isinstance(face, dict):
@@ -241,12 +352,28 @@ def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | 
             # 不能套用，否则会把那些视图的正面误剔除。
             if view == "isometric" and not face_is_front_facing(element, face_name, gui_rotation):
                 continue
-            points = [rotate_for_display(point, gui_rotation)
-                      for point in _element_points(element, face_name)]
-            scaled_points = [tuple(8.0 + (point[i] - 8.0) * gui_scale[i] for i in range(3)) for point in points]
-            projections_and_depths = [_project_view(point, view, camera_distance) for point in scaled_points]
-            projected = [item[0] for item in projections_and_depths]
-            depths = [item[1] for item in projections_and_depths]
+            if view == "isometric":
+                # 直接复刻游戏的变换链：模型点经 display 旋转/缩放后正交投影。
+                root_transform = model.get("transform")
+                projections_and_depths = []
+                for point in (apply_root_transform(raw, root_transform)
+                              for raw in _element_points(element, face_name)):
+                    screen, depth = gui_screen_point(point, gui_rotation)
+                    projections_and_depths.append((
+                        (screen[0] * gui_scale[0] + projection_offset[0],
+                         screen[1] * gui_scale[1] + projection_offset[1]),
+                        depth * gui_scale[2]))
+                projected = [item[0] for item in projections_and_depths]
+                depths = [item[1] for item in projections_and_depths]
+                offset_for_buffer = (0.0, 0.0)
+            else:
+                points = [rotate_for_display(point, gui_rotation)
+                          for point in _element_points(element, face_name)]
+                scaled_points = [tuple(8.0 + (point[i] - 8.0) * gui_scale[i] for i in range(3)) for point in points]
+                projections_and_depths = [_project_view(point, view, camera_distance) for point in scaled_points]
+                projected = [item[0] for item in projections_and_depths]
+                depths = [item[1] for item in projections_and_depths]
+                offset_for_buffer = projection_offset
             depth = sum(depths) / len(depths)
             uv = face.get("uv")
             texture_ref = resolve_texture_reference(model, str(face.get("texture", "")))
@@ -276,7 +403,7 @@ def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | 
         ppm = pixels_per_unit or (size / 16.0)
         try:
             return _render_projected_depth_buffer(quads, size, face_shade, view,
-                                                  ppm, projection_offset)
+                                                  ppm, offset_for_buffer)
         except ModuleNotFoundError as error:
             if error.name != "numpy":
                 raise
@@ -335,54 +462,49 @@ def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | 
 
 def _render_projected_depth_buffer(quads, size: int, face_shade: dict[str, float], view: str,
                                    pixels_per_unit: float, projection_offset: tuple[float, float]) -> Image.Image:
-    """Rasterize projected faces with per-pixel depth instead of average-depth painter sorting."""
+    """Rasterize projected faces per pixel: barycentric depth, UV, texel fetch.
+
+    A single perspective transform per quad (Pillow) cannot sample a face whose UV
+    rectangle is degenerate or nearly so - flat foliage panels are exported with
+    u1 == u2, and the matrix inversion then fails, which silently dropped the whole
+    face. Barycentric interpolation over the same two triangles that carry the depth
+    has no such singularity, and it is what the GPU actually does, so per-pixel UV
+    interpolation replaces the per-quad transform.
+    """
     import numpy as np
 
-    output = np.zeros((size, size, 4), dtype=np.uint8)
+    output = np.zeros((size, size, 3), dtype=np.float64)
+    alpha_buffer = np.zeros((size, size), dtype=np.float64)
     z_buffer = np.full((size, size), np.inf, dtype=np.float64)
     # 正交投影（本项目所有视图都是正交）下深度沿屏幕线性变化，直接按重心
     # 坐标插值 depth；逆深度插值是透视投影才用的，套在正交上会让平面 quad
     # 的深度非线性，相交处互相撕出破洞。
     keep_max = view in ("top", "isometric")  # 这些视图 depth 越大越靠近相机
     depth_init = -np.inf if keep_max else np.inf
+    cutout = ALPHA_CUTOUT / 255.0
 
     for _average_depth, face_name, projected, texture, uv_points, vertex_depths in quads:
         destination = [(size / 2 + (x + projection_offset[0]) * pixels_per_unit,
                         size / 2 + (y + projection_offset[1]) * pixels_per_unit) for x, y in projected]
-        left = max(0, int(min(p[0] for p in destination)) - 1)
-        top = max(0, int(min(p[1] for p in destination)) - 1)
-        right = min(size, int(max(p[0] for p in destination)) + 2)
-        bottom = min(size, int(max(p[1] for p in destination)) + 2)
+        left = max(0, int(math.floor(min(p[0] for p in destination))))
+        top = max(0, int(math.floor(min(p[1] for p in destination))))
+        right = min(size, int(math.ceil(max(p[0] for p in destination))) + 1)
+        bottom = min(size, int(math.ceil(max(p[1] for p in destination))) + 1)
         if right <= left or bottom <= top:
             continue
-        local_dest = [(x - left, y - top) for x, y in destination]
-        mask = Image.new("L", (right - left, bottom - top), 0)
-        ImageDraw.Draw(mask).polygon(local_dest, fill=255)
-        if texture is not None and uv_points is not None:
-            coeff = _coefficients(local_dest, uv_points)
-            if coeff is None:
-                continue
-            face_image = texture.transform(mask.size, Image.Transform.PERSPECTIVE, coeff,
-                                           resample=Image.Resampling.NEAREST)
-            face_image.putalpha(ImageChops.multiply(face_image.getchannel("A"), mask))
-            apply_alpha_cutout(face_image)
-        else:
-            face_image = Image.new("RGBA", mask.size, (160, 160, 160, 255))
-            face_image.putalpha(mask)
-
         shade = face_shade[face_name]
-        if shade != 1.0:
-            red, green, blue, alpha = face_image.split()
-            red = red.point(lambda value: int(value * shade))
-            green = green.point(lambda value: int(value * shade))
-            blue = blue.point(lambda value: int(value * shade))
-            face_image = Image.merge("RGBA", (red, green, blue, alpha))
-        source = np.asarray(face_image, dtype=np.uint8)
+        sprite = None
+        if texture is not None and uv_points is not None:
+            sprite = np.asarray(texture.convert("RGBA"), dtype=np.float64) / 255.0
+            sprite_height, sprite_width = sprite.shape[0], sprite.shape[1]
 
+        # 像素中心采样，与 GPU 的多边形覆盖规则一致（边界像素归入三角形）。
         grid_x, grid_y = np.meshgrid(np.arange(left, right) + 0.5,
                                      np.arange(top, bottom) + 0.5)
-        depth_map = np.full((bottom - top, right - left), depth_init, dtype=np.float64)
-        # 两个三角形覆盖 quad，对每个像素线性插值深度。
+        region_depth = z_buffer[top:bottom, left:right]
+        region_rgb = output[top:bottom, left:right]
+        region_alpha = alpha_buffer[top:bottom, left:right]
+
         for triangle in ((0, 1, 2), (0, 2, 3)):
             points = [destination[index] for index in triangle]
             depths = [float(vertex_depths[index]) for index in triangle]
@@ -394,29 +516,40 @@ def _render_projected_depth_buffer(quads, size: int, face_shade: dict[str, float
             w1 = ((y2 - y0) * (grid_x - x2) + (x0 - x2) * (grid_y - y2)) / denominator
             w2 = 1.0 - w0 - w1
             inside = (w0 >= -1e-7) & (w1 >= -1e-7) & (w2 >= -1e-7)
-            triangle_depth = w0 * depths[0] + w1 * depths[1] + w2 * depths[2]
-            triangle_depth[~inside] = depth_init
-            depth_map = np.maximum(depth_map, triangle_depth) if keep_max else np.minimum(depth_map, triangle_depth)
+            if not inside.any():
+                continue
+            depth_map = np.full(inside.shape, depth_init, dtype=np.float64)
+            depth_map[inside] = (w0[inside] * depths[0] + w1[inside] * depths[1]
+                                 + w2[inside] * depths[2])
+            compare_depth = -depth_map if keep_max else depth_map
+            closer = inside & (compare_depth < region_depth)
 
-        # 归一成"越小越近"，配合 z_buffer 初始 inf 与 `<` 比较。
-        compare_depth = -depth_map if keep_max else depth_map
-        region_depth = z_buffer[top:bottom, left:right]
-        alpha = source[:, :, 3].astype(np.float64) / 255.0
-        closer = (compare_depth < region_depth) & (alpha > 0.0)
-        if not np.any(closer):
-            continue
-        region = output[top:bottom, left:right]
-        src_rgb = source[:, :, :3].astype(np.float64)
-        dst_rgb = region[:, :, :3].astype(np.float64)
-        dst_alpha = region[:, :, 3].astype(np.float64) / 255.0
-        blend_alpha = alpha[:, :, None]
-        composed_rgb = src_rgb * blend_alpha + dst_rgb * (1.0 - blend_alpha)
-        composed_alpha = alpha + dst_alpha * (1.0 - alpha)
-        region[closer, :3] = np.clip(composed_rgb[closer], 0, 255).astype(np.uint8)
-        region[closer, 3] = np.clip(composed_alpha[closer] * 255.0, 0, 255).astype(np.uint8)
-        region_depth[closer] = compare_depth[closer]
+            if sprite is None:
+                flat = tuple(int(160 * shade) for _ in range(3))
+                region_rgb[closer] = flat
+                region_alpha[closer] = 1.0
+                region_depth[closer] = compare_depth[closer]
+                continue
 
-    return Image.fromarray(output, mode="RGBA")
+            u = (w0 * uv_points[triangle[0]][0] + w1 * uv_points[triangle[1]][0]
+                 + w2 * uv_points[triangle[2]][0])
+            v = (w0 * uv_points[triangle[0]][1] + w1 * uv_points[triangle[1]][1]
+                 + w2 * uv_points[triangle[2]][1])
+            # 纹素中心取样：UV 是纹素单位，向下取整就是该纹素。
+            texel_u = np.clip(u.astype(np.int64), 0, sprite_width - 1)
+            texel_v = np.clip(v.astype(np.int64), 0, sprite_height - 1)
+            texel = sprite[texel_v, texel_u]
+            opaque = closer & (texel[:, :, 3] >= cutout)
+            if not opaque.any():
+                continue
+            region_rgb[opaque] = texel[:, :, :3][opaque] * shade
+            region_alpha[opaque] = 1.0
+            region_depth[opaque] = compare_depth[opaque]
+
+    rgba = np.zeros((size, size, 4), dtype=np.uint8)
+    rgba[:, :, :3] = np.clip(output * 255.0, 0, 255).astype(np.uint8)
+    rgba[:, :, 3] = np.clip(alpha_buffer * 255.0, 0, 255).astype(np.uint8)
+    return Image.fromarray(rgba, mode="RGBA")
 
 
 def visible_projected_measurements(model: dict, texture_resolver: Callable[[str], Path | None],
@@ -434,10 +567,10 @@ def visible_projected_measurements(model: dict, texture_resolver: Callable[[str]
             # 当成实心块）会污染 fit 的尺寸与居中测量。
             if not face_is_front_facing(element, face_name, gui_rotation):
                 continue
-            points = [rotate_for_display(point, gui_rotation)
-                      for point in _element_points(element, face_name)]
-            projected = [project_iso((point[0] - 8.0, point[1] - 8.0, point[2] - 8.0))
-                          for point in points]
+            # 与渲染同一套变换，否则 fit 算出的尺寸和游戏里差一个镜像。
+            root_transform = model.get("transform")
+            projected = [gui_screen_point(apply_root_transform(point, root_transform), gui_rotation)[0]
+                          for point in _element_points(element, face_name)]
             projected_all.extend(projected)
             uv = face.get("uv")
             texture_ref = resolve_texture_reference(model, str(face.get("texture", "")))
