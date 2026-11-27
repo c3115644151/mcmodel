@@ -216,30 +216,34 @@ def remap_sample_faces(sample: dict, texture_key: str, kind: str = "white") -> d
             raise SystemExit(f"the sample key has no {face} face")
         return list(faces[face]["uv"])
 
-    # The artist's up-face window (x0..2, y0..6) holds only one texel of the darker mid tone; the
-    # other five rows are the light tone, so in game the top reads as flat white once mipmapped.
-    # bake_white_key_split() paints a 50/50 mid/light band into the texture's empty lower half;
-    # pointing the top face there restores the layered look from the Blockbench viewport.
-    top_uv = [0.0, 8.0, 4.0, 16.0] if kind == "white" else uv("up")
-    return {
-        "north": {"texture": f"#{texture_key}", "uv": uv("north")},
-        "south": {"texture": f"#{texture_key}", "uv": uv("south")},
-        "east": {"texture": f"#{texture_key}", "uv": uv("east")},
-        "west": {"texture": f"#{texture_key}", "uv": uv("west")},
-        "up": {"texture": f"#{texture_key}", "uv": top_uv},
-        "down": {"texture": f"#{texture_key}", "uv": uv("down")},
-    }
+    # The artist's own uv windows are cut against the 128px recolor sheet and land outside this
+    # 16px palette, so a white key has to be re-pointed at the baked blocks in the sheet's free
+    # right half. The look being reproduced is the Blockbench viewport: the top of the key is one
+    # flat light tone, and the vertical faces are two layers stacked in height, light above mid.
+    # Offsetting the bands along the key's length instead reads as a stripe down the keyboard.
+    if kind == "white":
+        face_uv = {
+            "up": [8.0, 8.0, 12.0, 12.0],
+            "north": [8.0, 12.0, 12.0, 16.0],
+            "south": [8.0, 12.0, 12.0, 16.0],
+            "east": [8.0, 12.0, 12.0, 16.0],
+            "west": [8.0, 12.0, 12.0, 16.0],
+            "down": [8.0, 14.0, 12.0, 16.0],
+        }
+    else:
+        face_uv = {face: uv(face) for face in ("north", "south", "east", "west", "up", "down")}
+    return {face: {"texture": f"#{texture_key}", "uv": window} for face, window in face_uv.items()}
 
 
 def bake_white_key_split(texture_path: Path) -> None:
-    """Paint the white key's two-tone top into the texture's empty lower half.
+    """Paint the white key's tone blocks into the texture's empty right half.
 
-    The artist's own top-face UV window is mostly light tone, so Minecraft mipmapping collapses the
-    single dark texel and the key reads flat white. The Blockbench viewport shows a clear two-tone
-    top: a darker mid band at the back, a light band at the front. We reproduce that exactly with
-    the palette tones already in the texture, in rows 8..15 which the source leaves transparent, and
-    route the white key's top face there (see remap_sample_faces). Colour values are the artist's
-    own TONES, so the baked band is the same art, just spread over more texels to survive mipmaps.
+    A white key reads as two layers stacked in height: one flat light tone across the top, and a
+    light/mid pair on the vertical faces so the lower layer of the key is visibly darker. The
+    artist's own windows are cut against the 128px recolor sheet and cannot address this 16px
+    palette, so the blocks are painted here, in the half the source leaves transparent, and the key
+    faces are pointed at them (see remap_sample_faces). Colour values are the artist's own TONES,
+    so the blocks are the same art, just spread over enough texels to survive mipmapping.
     """
     from PIL import Image
 
@@ -248,14 +252,20 @@ def bake_white_key_split(texture_path: Path) -> None:
         raise SystemExit(f"white key texture must be 16x16, got {image.size}")
     mid = TONES["mid"][1]
     light = TONES["light"][1]
-    # Each band is four rows tall, enough to stay distinct after mipmapping. Back (v high) is the
-    # darker mid tone; front (v low) is the light tone, matching the Blockbench viewport.
-    for y in range(8, 12):
-        for x in range(4):
-            image.putpixel((x, y), mid)
-    for y in range(12, 16):
-        for x in range(4):
+    # Top face: four texel rows, one per pixel of key depth. The artist keeps the last row at the
+    # wall end darker, so the rear quarter of the top is mid and the rest is light.
+    for y in range(8, 11):
+        for x in range(8, 12):
             image.putpixel((x, y), light)
+    for x in range(8, 12):
+        image.putpixel((x, 11), mid)
+    # Vertical faces: light above, mid below, two texel rows each so mipmapping cannot merge them.
+    for y in range(12, 14):
+        for x in range(8, 12):
+            image.putpixel((x, y), light)
+    for y in range(14, 16):
+        for x in range(8, 12):
+            image.putpixel((x, y), mid)
     image.save(texture_path)
 
 
