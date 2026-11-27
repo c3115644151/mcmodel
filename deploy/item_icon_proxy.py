@@ -209,6 +209,46 @@ def normalize_to_block(model: dict[str, Any], target_size: float = TARGET_BLOCK_
     }
 
 
+def bake_root_transform(model):
+    """Fold a translation-only root "transform" into the element coordinates.
+
+    A NeoForge root transform is applied when the model is baked, so an item proxy
+    that keeps it needs every element shifted by the same amount anyway. Shifting the
+    elements and dropping the key is what keeps the proxy legal: coordinates are
+    limited to [-16, 32], and a model taller than a block cannot hold a +16 shift and
+    stay inside that box. Rotating or scaling root transforms are left untouched -
+    they cannot be represented by moving cuboids, and the renderer still applies them.
+    """
+    transform = model.get("transform")
+    if not transform:
+        return model
+    if any(key in transform for key in ("matrix", "rotation", "left_rotation", "scale",
+                                        "right_rotation", "post_rotation")):
+        return model
+    translation = transform.get("translation")
+    if not translation:
+        return model
+    delta = tuple(float(value) * 16.0 for value in translation)
+    if not any(abs(value) > 1e-9 for value in delta):
+        return model
+    baked = copy.deepcopy(model)
+    for element in baked.get("elements", []):
+        for key in ("from", "to"):
+            if key in element:
+                element[key] = [round(float(element[key][axis]) + delta[axis], 6)
+                                for axis in range(3)]
+        rotation = element.get("rotation")
+        if isinstance(rotation, dict) and "origin" in rotation:
+            rotation["origin"] = [round(float(rotation["origin"][axis]) + delta[axis], 6)
+                                  for axis in range(3)]
+    baked.pop("transform", None)
+    # NeoForge inherits a root transform through the parent chain, so a proxy that
+    # keeps the source block model as its parent would apply this shift a second
+    # time. The marker tells the writer to reparent it to minecraft:block/block,
+    # which carries no root transform.
+    baked["__root_baked__"] = True
+    return baked
+
 def fit_gui_projection(model: dict[str, Any], texture_resolver,
                        target_px: float = GUI_ICON_TARGET_PX,
                        floor_anchor: bool = False):
@@ -276,13 +316,14 @@ def fit_gui_projection(model: dict[str, Any], texture_resolver,
     centre_x = (bounds[0] + bounds[2]) * 0.5
     centre_y = (bounds[1] + bounds[3]) * 0.5
 
-    # Undo the GUI projection of a centred offset. Camera [30,225,0] projects
-    # sx = cos45*(x+z), sy = -(cos30*y - sin30*(x-z)/sqrt2). Choosing dx=dz
-    # cancels x-z in sy (so the sin30 term is unchanged) and adds 2*dx along
-    # x+z in sx: dx=dz=-cx/(2cos45) zeroes sx, dy=cy/cos30 zeroes sy.
+    # Undo the GUI projection of a centred offset. The game rotates the model by
+    # yaw 225 and projects (x, -y), which gives sx = -cos45*(x+z) and
+    # sy = -(cos30*y - sin30*(x-z)/sqrt2). Choosing dx=dz cancels x-z in sy (the
+    # sin30 term is unchanged) and moves sx by -cos45*(dx+dz), so dx=dz=+cx/(2cos45)
+    # zeroes sx; dy=cy/cos30 zeroes sy.
     cos45 = math.cos(math.radians(45.0))
     cos30 = math.cos(math.radians(30.0))
-    dx = -centre_x / (2.0 * cos45)
+    dx = centre_x / (2.0 * cos45)
     dz = dx
     if floor_anchor:
         # 矮模型贴地: 把可见下边缘(bounds[3], 屏幕 y 越大越靠下)移到满格
@@ -318,7 +359,7 @@ def fit_gui_projection(model: dict[str, Any], texture_resolver,
     else:
         residual_y = (final_box[1] + final_box[3]) * 0.5
     if abs(residual_x) > 1e-4 or abs(residual_y) > 1e-4:
-        rx = -residual_x / (2.0 * cos45)
+        rx = residual_x / (2.0 * cos45)
         rz = rx
         ry = -residual_y / cos30 if floor_anchor else residual_y / cos30
         def refine(point):

@@ -28,6 +28,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import resolve
+from item_ids import official_items
 from icon_overrides import (apply_screen_offset, apply_yaw_rotation, effective_params,
                              load_overrides, save_overrides)
 from item_icon_proxy import (VANILLA_BLOCK_GUI, geometry_bounds, gui_icon_target_px,
@@ -47,21 +48,19 @@ ICON_SIZE = 64  # render resolution; editor displays 1x (16px) and zoomed
 
 # Thumbnails render the already-fitted proxy on disk (cheap) and are cached, so the
 # grid never runs the full fit pipeline 80+ times at once and starves the server.
-_THUMB_CACHE: dict[str, str] = {}
+# The cache key includes the proxy's mtime+size so a saved override that regenerates
+# a proxy immediately shows up in the grid on the next request.
+_THUMB_CACHE: dict[str, tuple[tuple[float, int], str]] = {}
 
 
 def registered_item_ids() -> set[str]:
-    """Ids actually registered as items in ModItems (all register* variants).
+    """Ids the creative tab offers; internal render parts are excluded.
 
-    Model components in item/*.json (bulletin variants, rug tiles, render parts)
-    are NOT registered and must not appear as inventory icons.
+    ModItems also registers component items (globe_sphere_render, wheelbarrow_wheel,
+    weather_vane_base, bulletin_page, ...) that the player can never hold, so the tab
+    is the real inventory-item set.
     """
-    import re
-    registry = ROOT / "src/main/java/com/pastoralhome/registry/ModItems.java"
-    if not registry.is_file():
-        return set()
-    source = registry.read_text(encoding="utf-8")
-    return set(re.findall(r'ITEMS\.register(?:SimpleBlockItem|SimpleItem|BlockItem|Item)\s*\(\s*"([a-z0-9_]+)"', source))
+    return set(official_items(ROOT))
 
 
 def item_ids() -> list[str]:
@@ -89,20 +88,35 @@ def item_ids() -> list[str]:
 
 def render_thumb(item_id: str) -> str | None:
     """Render the fitted proxy already on disk (no fit pass); base64 PNG or None."""
-    if item_id in _THUMB_CACHE:
-        return _THUMB_CACHE[item_id]
     path = ASSETS / "models/item_icons" / item_id / "variant_0.json"
     if not path.is_file():
         return None
+    stat = path.stat()
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    cached = _THUMB_CACHE.get(item_id)
+    if cached and cached[0] == stamp:
+        return cached[1]
     model = json.loads(path.read_text(encoding="utf-8"))
     resolver = lambda ref: resolve_texture(ROOT, ref)
     try:
+        # Full 16px slot canvas, icon at its true in-slot proportion. No cropping:
+        # each grid cell is one complete vanilla slot, exactly what the player sees.
         image = render_projected_icon(model, resolver, size=ICON_SIZE)
     except Exception:
         return None
     data = base64.b64encode(png_response(image)).decode("ascii")
-    _THUMB_CACHE[item_id] = data
+    _THUMB_CACHE[item_id] = (stamp, data)
     return data
+
+
+def regenerate_item(item_id: str) -> bool:
+    """Run the generator for one item so a saved override reaches its proxy."""
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve().parent / "normalize_item_icons.py"),
+         "--apply", "--items", item_id],
+        cwd=ROOT, capture_output=True, text=True)
+    return result.returncode == 0
 
 
 def auto_params(item_id: str) -> dict[str, Any]:
@@ -214,6 +228,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        # Never cache: this dev tool is edited live and a stale page shows old
+        # layout/CSS, which is exactly the kind of false verification to avoid.
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Pragma", "no-cache")
         self.end_headers()
         self.wfile.write(body)
 
@@ -279,7 +297,11 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(overrides, dict):
             self._json({"error": "expected {items: {...}}"}, 400); return
         path = save_overrides(ROOT, overrides)
-        self._json({"saved": str(path), "count": len(load_overrides(ROOT))})
+        # Regenerate every tuned item's proxy so the grid thumbnails (which read
+        # the proxy on disk) match the candidate preview immediately.
+        regenerated = [i for i in overrides if regenerate_item(i)]
+        self._json({"saved": str(path), "count": len(load_overrides(ROOT)),
+                    "regenerated": regenerated})
 
 
 def main() -> int:

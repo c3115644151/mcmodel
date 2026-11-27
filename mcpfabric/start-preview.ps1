@@ -5,12 +5,21 @@ $pidFile = Join-Path $runDirectory 'mcpfabric-preview.pid'
 $logs = Join-Path $projectRoot 'build/mcpfabricPreview'
 New-Item -ItemType Directory -Force $logs | Out-Null
 
+# Identify preview clients by their run-config marker, not by the NeoForge version: the pin moves
+# and a version that no longer matches would let a second client start alongside the first.
 function Get-McpfabricPreviewProcesses {
     Get-CimInstance Win32_Process | Where-Object {
         $_.Name -eq 'java.exe' -and
         $_.CommandLine -like '*net.neoforged.fml.startup.Client*' -and
         $_.CommandLine -like "*$projectRoot*build*classes*java*main*" -and
-        $_.CommandLine -like '*neoforge*26.1.2.109*'
+        $_.CommandLine -like '*pastoral_home.dev_preview=true*'
+    }
+}
+
+# A launcher that is still starting up holds the build lock and would deadlock against a second one.
+function Get-McpfabricPreviewLaunchers {
+    Get-CimInstance Win32_Process | Where-Object {
+        $_.CommandLine -like '*runClient*' -and $_.CommandLine -like '*mcpfabricPreview=true*'
     }
 }
 
@@ -19,7 +28,7 @@ if (Test-Path $pidFile) {
     $old = Get-CimInstance Win32_Process -Filter "ProcessId=$oldPid" -ErrorAction SilentlyContinue
     if ($old -and $old.CommandLine -like '*net.neoforged.fml.startup.Client*' -and
         $old.CommandLine -like "*$projectRoot*build*classes*java*main*" -and
-        $old.CommandLine -like '*neoforge*26.1.2.109*') {
+        $old.CommandLine -like '*pastoral_home.dev_preview=true*') {
         throw "The isolated MCPFabric preview client is already running (PID $oldPid)."
     }
     Remove-Item -LiteralPath $pidFile
@@ -28,6 +37,11 @@ $existing = @(Get-McpfabricPreviewProcesses)
 if ($existing.Count -gt 0) {
     $pids = ($existing | ForEach-Object { $_.ProcessId }) -join ', '
     throw "Found an existing isolated preview client (PID $pids); refusing to start a duplicate. Run stop-preview first."
+}
+$launchers = @(Get-McpfabricPreviewLaunchers)
+if ($launchers.Count -gt 0) {
+    $pids = ($launchers | ForEach-Object { $_.ProcessId }) -join ', '
+    throw "A preview launch is still running (PID $pids); two launchers on one project deadlock on the build lock. Wait for it or stop it first."
 }
 
 Add-Type @'

@@ -146,7 +146,9 @@ def screen_offset_to_geometry(offset_x: float, offset_y: float,
     """Convert a screen-pixel offset (+right, +down) into geometry translation."""
     cos45 = math.cos(math.radians(45.0))
     cos30 = math.cos(math.radians(30.0))
-    sx = offset_x / gui_scale
+    # 游戏的 screen x 是 -(x+z)*cos45（见 fit_gui_projection 的推导），所以
+    # 正 offset_x 需要负的 dx+dz。
+    sx = -offset_x / gui_scale
     sy = offset_y / gui_scale
     dx = dz = sx / (2.0 * cos45)
     dy = -sy / cos30
@@ -205,7 +207,7 @@ def apply_screen_offset(model: dict[str, Any], texture_resolver,
     residual_x = (bounds[0] + bounds[2]) * 0.5 - target_cx
     residual_y = (bounds[1] + bounds[3]) * 0.5 - target_cy
     if abs(residual_x) > 1e-4 or abs(residual_y) > 1e-4:
-        rx = rz = -residual_x / (2.0 * cos45)
+        rx = rz = residual_x / (2.0 * cos45)
         ry = residual_y / cos30  # sy = -cos30*dy -> dy = -sy/cos30; ry is -dy
         ry = -ry
         for element in result.get("elements", []):
