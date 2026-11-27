@@ -65,6 +65,14 @@ WHITE_PIVOT_Y = 14.4   # artist key sample from y=14.4; rear-bottom edge is the 
 WHITE_PIVOT_Z = 4.0    # artist key sample z[1,5] shifted -1 -> [0,4]; rear edge at 4
 BLACK_PIVOT_Y = 14.3   # artist black key from y=14.3
 BLACK_PIVOT_Z = 4.0    # artist black key z[2.3,5] shifted -1 -> [1.3,4]; rear edge at 4
+# The two pedal boards are peeled out of the static shell and drawn as standalone meshes so the
+# renderer can dip the front edge when a pedal is stepped on. Coordinates below are after the
+# shell's +16 x / -1 z shift. The rear edge (against the cabinet) is the hinge.
+PEDAL_SOFT_X = (18.5, 22.5)
+PEDAL_SUSTAIN_X = (25.5, 29.5)
+PEDAL_Y = (1.0, 2.0)
+PEDAL_Z = (1.0, 6.0)
+PEDAL_PRESS_ANGLE_DEG = 5.7  # ~0.5 px dip over the 5 px board, matching the key press feel
 
 # Kept for tools/deploy/piano_key_report.py and older audit imports.
 BED_TOP_Y = 12.0
@@ -193,7 +201,7 @@ def open_key_well(model: dict) -> None:
     backs[0]["from"][2] = BACK_FRONT_Z
 
 
-def remap_sample_faces(sample: dict, texture_key: str) -> dict:
+def remap_sample_faces(sample: dict, texture_key: str, kind: str = "white") -> dict:
     """Map the artist's sample uv windows onto the rear-pivot key orientation.
 
     Both the artist sample and our pivot-local key run z from front (negative) to rear (zero):
@@ -208,14 +216,47 @@ def remap_sample_faces(sample: dict, texture_key: str) -> dict:
             raise SystemExit(f"the sample key has no {face} face")
         return list(faces[face]["uv"])
 
+    # The artist's up-face window (x0..2, y0..6) holds only one texel of the darker mid tone; the
+    # other five rows are the light tone, so in game the top reads as flat white once mipmapped.
+    # bake_white_key_split() paints a 50/50 mid/light band into the texture's empty lower half;
+    # pointing the top face there restores the layered look from the Blockbench viewport.
+    top_uv = [0.0, 8.0, 4.0, 16.0] if kind == "white" else uv("up")
     return {
         "north": {"texture": f"#{texture_key}", "uv": uv("north")},
         "south": {"texture": f"#{texture_key}", "uv": uv("south")},
         "east": {"texture": f"#{texture_key}", "uv": uv("east")},
         "west": {"texture": f"#{texture_key}", "uv": uv("west")},
-        "up": {"texture": f"#{texture_key}", "uv": uv("up")},
+        "up": {"texture": f"#{texture_key}", "uv": top_uv},
         "down": {"texture": f"#{texture_key}", "uv": uv("down")},
     }
+
+
+def bake_white_key_split(texture_path: Path) -> None:
+    """Paint the white key's two-tone top into the texture's empty lower half.
+
+    The artist's own top-face UV window is mostly light tone, so Minecraft mipmapping collapses the
+    single dark texel and the key reads flat white. The Blockbench viewport shows a clear two-tone
+    top: a darker mid band at the back, a light band at the front. We reproduce that exactly with
+    the palette tones already in the texture, in rows 8..15 which the source leaves transparent, and
+    route the white key's top face there (see remap_sample_faces). Colour values are the artist's
+    own TONES, so the baked band is the same art, just spread over more texels to survive mipmaps.
+    """
+    from PIL import Image
+
+    image = Image.open(texture_path).convert("RGBA")
+    if image.size != (16, 16):
+        raise SystemExit(f"white key texture must be 16x16, got {image.size}")
+    mid = TONES["mid"][1]
+    light = TONES["light"][1]
+    # Each band is four rows tall, enough to stay distinct after mipmapping. Back (v high) is the
+    # darker mid tone; front (v low) is the light tone, matching the Blockbench viewport.
+    for y in range(8, 12):
+        for x in range(4):
+            image.putpixel((x, y), mid)
+    for y in range(12, 16):
+        for x in range(4):
+            image.putpixel((x, y), light)
+    image.save(texture_path)
 
 
 def standalone_key_model(sample: dict, kind: str) -> dict:
@@ -237,10 +278,50 @@ def standalone_key_model(sample: dict, kind: str) -> dict:
         "elements": [{
             "from": [round(-width / 2.0, 6), 0.0, round(-length, 6)],
             "to": [round(width / 2.0, 6), round(thickness, 6), 0.0],
-            "faces": remap_sample_faces(sample, texture_key),
+            "faces": remap_sample_faces(sample, texture_key, kind),
             "name": f"piano_{kind}_key",
         }],
     }
+
+
+def is_pedal_element(element: dict) -> bool:
+    """The two pedal boards, after the shell shift: y 1..2, 4 px wide, z 1..6."""
+    f, t = element.get("from"), element.get("to")
+    if not f or not t:
+        return False
+    return (abs(f[1] - PEDAL_Y[0]) < 1e-6 and abs(t[1] - PEDAL_Y[1]) < 1e-6
+            and abs((t[0] - f[0]) - (PEDAL_SOFT_X[1] - PEDAL_SOFT_X[0])) < 1e-6
+            and abs(f[2] - PEDAL_Z[0]) < 1e-6 and abs(t[2] - PEDAL_Z[1]) < 1e-6)
+
+
+def standalone_pedal_model(element: dict, kind: str) -> dict:
+    """Peel one authored pedal board into a pivot-local mesh (rear edge at z=0).
+
+    The renderer copies this onto both pedals and dips the front edge when stepped on, the same way
+    the keys work. All face UVs come from the artist's board; nothing is invented here.
+    """
+    f, t = element["from"], element["to"]
+    width = float(t[0]) - float(f[0])
+    thickness = float(t[1]) - float(f[1])
+    length = float(t[2]) - float(f[2])
+    return {
+        "parent": "minecraft:block/block",
+        "ambientocclusion": True,
+        "textures": {
+            "bb_texture_0": "pastoral_home:block/piano_recolor",
+            "particle": "pastoral_home:block/piano_recolor_particle",
+        },
+        "elements": [{
+            "from": [round(-width / 2.0, 6), 0.0, round(-length, 6)],
+            "to": [round(width / 2.0, 6), round(thickness, 6), 0.0],
+            "faces": copy.deepcopy(element["faces"]),
+            "name": f"piano_{kind}_pedal",
+        }],
+    }
+
+
+def pedal_centre_x(element: dict) -> float:
+    return (float(element["from"][0]) + float(element["to"][0])) / 2.0
 
 
 def static_key_element(sample: dict, kind: str, centre_x: float, constants: dict, params: dict) -> dict:
@@ -255,7 +336,7 @@ def static_key_element(sample: dict, kind: str, centre_x: float, constants: dict
     return {
         "from": [round(centre_x - width / 2.0, 6), round(pivot_y, 6), round(pivot_z - length, 6)],
         "to": [round(centre_x + width / 2.0, 6), round(pivot_y + thickness, 6), round(pivot_z, 6)],
-        "faces": remap_sample_faces(sample, f"bb_texture_{tex_index}"),
+        "faces": remap_sample_faces(sample, f"bb_texture_{tex_index}", kind),
         "name": f"item_{kind}_key",
     }
 
@@ -303,6 +384,13 @@ def main() -> None:
         raise SystemExit(f"expected 11 static shell elements, got {len(static['elements'])}")
     static = shift(static, SHELL_X_SHIFT, 0.0, SHELL_Z_SHIFT)
     open_key_well(static)
+    # Peel the two pedal boards out of the static shell: they become standalone meshes that the
+    # renderer dips when a pedal is stepped on. A board left baked into the cell model would stay
+    # flat while its animated copy moved, so it must not remain here.
+    pedals = [element for element in static["elements"] if is_pedal_element(element)]
+    if len(pedals) != 2:
+        raise SystemExit(f"expected two pedal boards in the shell, got {len(pedals)}")
+    static["elements"] = [element for element in static["elements"] if not is_pedal_element(element)]
     clamped = clamp_depth(static, DEPTH_EPSILON, 16.0 - DEPTH_EPSILON)
     x0, y0, z0, x1, y1, z1 = extents(static)
     if abs(x0 - 2.5) > 0.02 or abs(x1 - 45.5) > 0.02 or abs(y1 - 32.0) > 0.02:
@@ -325,6 +413,10 @@ def main() -> None:
         shutil.copyfile(source, target)
         textures_written.append(target)
         print(f"wrote {target.relative_to(ROOT)}")
+
+    # Paint the white key's two-tone top into tex3's empty lower half, so the key reads layered
+    # in game instead of flat white. The standalone and item key models sample this region.
+    bake_white_key_split(TEXTURES / "piano_recolor_tex3.png")
 
     cells, warnings = split_model(static, keep_seam_faces=True)
     if warnings:
@@ -352,6 +444,13 @@ def main() -> None:
     save(MODELS / "piano_white_key_standalone.json", white_model)
     save(MODELS / "piano_black_key_standalone.json", black_model)
     written += [MODELS / "piano_white_key_standalone.json", MODELS / "piano_black_key_standalone.json"]
+    # Standalone pedal meshes. Sorted by centre x: soft board is 18.5..22.5 (centre 20.5),
+    # sustain is 25.5..29.5 (centre 27.5). Local rear edge sits at z=0 for a hinge.
+    pedals_by_x = sorted(pedals, key=pedal_centre_x)
+    for kind, element in zip(("soft", "sustain"), (pedals_by_x[0], pedals_by_x[1])):
+        save(MODELS / f"piano_{kind}_pedal_standalone.json", standalone_pedal_model(element, kind))
+        written.append(MODELS / f"piano_{kind}_pedal_standalone.json")
+        print(f"  piano_{kind}_pedal: centre x={pedal_centre_x(element):.2f}")
     save(GEOMETRY, {
         "pitch_px": pitch,
         "white_face_width_px": white_face,
@@ -368,6 +467,8 @@ def main() -> None:
     })
 
     item_model = copy.deepcopy(static)
+    # The inventory/hand model has no pedal state, so restore the two static boards here.
+    item_model["elements"].extend(copy.deepcopy(pedals))
     item_model["textures"]["bb_texture_3"] = "pastoral_home:block/piano_recolor_tex3"
     item_model["textures"]["bb_texture_4"] = "pastoral_home:block/piano_recolor_tex4"
     for index in range(int(constants["WHITE_KEYS"])):
