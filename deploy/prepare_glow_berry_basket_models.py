@@ -66,14 +66,16 @@ def main():
         long_model["elements"] = [element for element in long_model["elements"] if not is_top_strap(element)]
         save(ASSETS / f"models/block/glow_berry_basket_{key.removeprefix('short_')}_parallel.json", long_model)
 
-        # A slot icon has one block of room, so it must show the basket and not the
-        # strands that carry it to the ceiling: normalizing the hanging pose (32 units
-        # tall) shrinks the basket to a sixth of the slot. Keeping only the geometry of
-        # the single-cell pose fits the basket itself to the slot, which is what the
-        # item reads as in the inventory.
+        # The GUI icon shows the whole ripe plant: basket, side berries, the glowing
+        # vine, and the A-frame hanger. Cropping to y<=16.2 (an earlier attempt) threw
+        # away the vine + top berry clusters and left a bare-looking planter; the
+        # hanging pose is normalized to one block by normalize_item_icons.py, so the
+        # extra height no longer shrinks the basket to a sixth of the slot.
+        # Unripe still has no berries, so its icon keeps the single-cell crop.
         icon_model = copy.deepcopy(raw)
-        icon_model["elements"] = [element for element in raw["elements"]
-                                  if float(element["to"][1]) <= 16.2]
+        if key == "short_unripe":
+            icon_model["elements"] = [element for element in raw["elements"]
+                                      if float(element["to"][1]) <= 16.2]
         if not icon_model["elements"]:
             raise ValueError(f"No single-cell geometry left for the {key} basket icon")
         save(ASSETS / f"models/block/glow_berry_basket_icon_{key.removeprefix('short_')}.json", icon_model)

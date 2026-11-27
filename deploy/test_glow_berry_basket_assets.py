@@ -89,20 +89,24 @@ assert icon_report["projected_gui_size"][0] >= 8 and icon_report["projected_gui_
 # the item unreadable in the inventory.
 assert item["model"]["cases"][0]["model"]["model"] != \
     "pastoral_home:block/glow_berry_basket_short_unripe"
-for stage in ("unripe", "ripe"):
-    icon_source = read(ASSETS / f"models/block/glow_berry_basket_icon_{stage}.json")
-    assert icon_source["elements"], f"icon source for {stage} has no geometry"
-    assert all(float(element["to"][1]) <= 16.2 for element in icon_source["elements"]), \
-        f"icon source for {stage} still carries the hanging strands"
+# The unripe icon keeps the single-cell crop: no berries to show, so the A-frame
+# hanger would only waste slot space. The ripe icon is the full plant - basket,
+# side berries, glowing vine and A-frame hanger. normalize_item_icons.py fits the
+# whole pose into one block, so the hanging geometry no longer shrinks the basket.
+unripe_source = read(ASSETS / "models/block/glow_berry_basket_icon_unripe.json")
+assert unripe_source["elements"], "unripe icon source has no geometry"
+assert all(float(element["to"][1]) <= 16.2 for element in unripe_source["elements"]), \
+    "unripe icon source still carries the hanging strands"
+ripe_source = read(ASSETS / "models/block/glow_berry_basket_icon_ripe.json")
+assert ripe_source["elements"], "ripe icon source has no geometry"
+assert any(float(element["to"][1]) > 16.2 for element in ripe_source["elements"]), \
+    "ripe icon must keep the vine + A-frame hanger, not a bare planter"
 
 # The slot icon must show the ripe basket with its glowing berry strands, not the
-# bare unripe pot. Both icon sources carry single-cell geometry, so this is purely
-# an art-direction choice: the ripe source keeps the fruit that reads as the item.
+# bare unripe pot. This is an art-direction choice: the ripe source keeps the fruit.
 gui_proxy = read(ASSETS / "models/item_icons/glow_berry_basket/variant_0.json")
 assert gui_proxy["parent"] == "pastoral_home:block/glow_berry_basket_icon_ripe", \
     "GUI proxy must source the ripe basket so the inventory icon keeps its berries"
-ripe_source = read(ASSETS / "models/block/glow_berry_basket_icon_ripe.json")
-unripe_source = read(ASSETS / "models/block/glow_berry_basket_icon_unripe.json")
 assert len(ripe_source["elements"]) > len(unripe_source["elements"]), \
     "ripe icon source must carry more geometry than the bare unripe pot"
 

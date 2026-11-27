@@ -52,14 +52,19 @@ def preview_model_ids(gui_node: dict) -> list[str]:
     return collect_model_ids(gui_node)
 
 
-def creative_tab_item_ids(root: Path) -> set[str]:
-    """Read the project's explicit creative-tab output list, excluding renderer internals."""
-    registry = root / "src/main/java/com/pastoralhome/registry/ModCreativeTabs.java"
+def registered_item_ids(root: Path) -> set[str]:
+    """Item ids actually registered in ModItems - the honest inventory-item set.
+
+    item/*.json also contains model components (bulletin variants, rug_surface
+    tiles, globe/wheelbarrow render parts, empty_* states) that are never held as
+    items. They must not be listed as if they were separate inventory icons.
+    """
+    registry = root / "src/main/java/com/pastoralhome/registry/ModItems.java"
     if not registry.is_file():
         return set()
     source = registry.read_text(encoding="utf-8")
-    fields = re.findall(r"output\.accept\s*\(\s*ModItems\.([A-Z0-9_]+)\.get\(\)\s*\)", source)
-    return {field.lower() for field in fields}
+    return set(re.findall(
+        r'register(?:SimpleBlockItem|Item|BlockItem)\s*\(\s*"([a-z0-9_]+)"', source))
 
 
 def main() -> int:
@@ -75,9 +80,10 @@ def main() -> int:
     parser.add_argument("--items", default="", help="comma-separated item ids; default is all")
     parser.add_argument("--vanilla-reference", action="store_true",
                         help="prepend a full-cube baseline rendered with the same vanilla GUI transform")
-    parser.add_argument("--creative-only", action="store_true",
-                        help="restrict the sheet to creative-tab items (default: show every GUI proxy "
-                             "so hidden states and renderer-only items stay in the QA net)")
+    parser.add_argument("--all-proxies", action="store_true",
+                        help="include every GUI proxy in item/*.json, including model components "
+                             "(bulletin variants, rug tiles, render parts, empty states). Default "
+                             "shows only ids registered as real inventory items in ModItems.")
     args = parser.parse_args()
 
     root = (args.root or Path.cwd()).resolve()
@@ -87,18 +93,18 @@ def main() -> int:
     assets_root = root / "src/main/resources/assets" / mod_id
     items_dir = assets_root / "items"
     requested = {part.strip() for part in args.items.split(",") if part.strip()}
-    creative_items = creative_tab_item_ids(root)
-    # 默认全量：每个有 GUI proxy 的物品都要进预览，包括不在创意栏的酒容器
-    # 满状态、啤酒瓶和 renderer-only 项——它们的图标同样需要被 QA 覆盖。
-    include_everything = bool(requested) or not args.creative_only
-    omitted_hidden = 0
+    registered = registered_item_ids(root)
+    # 默认只列真正注册过的物品：item/*.json 里还混着贴图切片、bulletin 变体和
+    # globe/wheelbarrow 渲染组件，它们不是可持有的 inventory 图标，不该混进预览。
+    include_all = bool(requested) or args.all_proxies
+    omitted_components = 0
     entries = []
 
     for item_path in sorted(items_dir.glob("*.json")):
         if requested and item_path.stem not in requested:
             continue
-        if not include_everything and item_path.stem not in creative_items:
-            omitted_hidden += 1
+        if not include_all and item_path.stem not in registered:
+            omitted_components += 1
             continue
         definition = json.loads(item_path.read_text(encoding="utf-8"))
         model_root = definition.get("model", {})
@@ -216,8 +222,9 @@ def main() -> int:
     report_path.write_text(json.dumps(entries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"Rendered {len(entries)} generated GUI proxy previews to {output}")
     print(f"Wrote projected size report to {report_path}")
-    if omitted_hidden:
-        print(f"Omitted {omitted_hidden} registered renderer-only items not listed in the creative tab.")
+    if omitted_components:
+        print(f"Omitted {omitted_components} model components not registered as inventory items "
+              f"(use --all-proxies to include them).")
     print("This offline preview does not emulate lighting, depth rasterization, or atlas sampling.")
     return 0
 
