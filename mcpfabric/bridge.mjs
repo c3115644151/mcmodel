@@ -40,6 +40,11 @@ export function serverCommand() {
     command: resolveServerNode(),
     args: [path.join(projectRoot, "tools/mcpfabric/node_modules/mcpfabric-mcp-server/dist/index.js")],
     cwd: projectRoot,
+    // The SDK hands the server a scrubbed default environment, which drops MCPFABRIC_URL/TOKEN and
+    // leaves the server guessing from the global discovery file. Two clients can run side by side
+    // (the preview build and a hand-started dev client), so the bridge address has to travel with
+    // the run that asked for it.
+    env: process.env,
     stderr: "inherit",
   };
 }
