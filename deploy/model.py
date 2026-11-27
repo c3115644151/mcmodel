@@ -303,7 +303,7 @@ def cmd_viewport(args) -> None:
         say("viewport", "launching Blockbench on " + source.name)
         subprocess.Popen([str(exe), str(source)])
         import time
-        for _ in range(60):
+        for _ in range(180):
             if port_open():
                 break
             time.sleep(0.5)
@@ -440,7 +440,12 @@ def bb_call(tool: str, payload: dict, out_path: Path) -> str:
 
 
 def first_json(text: str):
-    """The export arrives wrapped in prose; take the first balanced object literal."""
+    """Take the first balanced object; unwrap the MCP envelope around a native export.
+
+    bb_call.mjs returns the tool result as an envelope whose "content" string holds the
+    real java_block JSON. Returning the envelope made cmd_export report elements=0 and
+    silently skip the generator diff, so unwrap it before handing it to callers.
+    """
     start = text.find("{")
     while start != -1:
         depth = 0
@@ -451,32 +456,54 @@ def first_json(text: str):
                 depth -= 1
                 if depth == 0:
                     try:
-                        return json.loads(text[start:index + 1])
+                        obj = json.loads(text[start:index + 1])
                     except json.JSONDecodeError:
                         break
+                    if isinstance(obj, dict) and isinstance(obj.get("content"), str):
+                        nested = first_json(obj["content"])
+                        if nested is not None:
+                            return nested
+                    return obj
         start = text.find("{", start + 1)
     return None
 
 
 def model_diff(official: dict, shipped: dict) -> list:
-    """What the generator does differently from Blockbench's own export, one line per difference."""
+    """What the generator changes from Blockbench's own export, one line per real difference.
+
+    Multipart generators reorder and lift cubes, so compare by geometry (from/to), not by
+    array index. An index comparison calls every cube different the moment one moves slot.
+    The 0.011px tolerance accepts LIFT, the deliberate offset that keeps side strips off
+    the full top face; UVs are still compared face by face with no tolerance.
+    """
     lines = []
     want, have = official.get("elements", []), shipped.get("elements", [])
     if len(want) != len(have):
         lines.append("element count " + str(len(want)) + " vs " + str(len(have)))
-    for index in range(min(len(want), len(have))):
-        a, b = want[index], have[index]
-        for key in ("from", "to"):
-            if [round(v, 4) for v in a.get(key, [])] != [round(v, 4) for v in b.get(key, [])]:
-                lines.append("element " + str(index) + " " + key + " " + str(a.get(key))
-                             + " vs " + str(b.get(key)))
-        for face, spec in (a.get("faces") or {}).items():
-            other = (b.get("faces") or {}).get(face)
+
+    def geom(element):
+        return [float(value) for value in element.get("from", []) + element.get("to", [])]
+
+    def same_geometry(a, b, tolerance=0.011):
+        return len(a) == len(b) and all(abs(x - y) <= tolerance for x, y in zip(a, b))
+
+    used = set()
+    for index, shipped_element in enumerate(have):
+        match = next((i for i, native in enumerate(want)
+                      if i not in used and same_geometry(geom(native), geom(shipped_element))), None)
+        if match is None:
+            lines.append("shipped element " + str(index) + " geometry " + str(geom(shipped_element)[:3])
+                         + " has no native match")
+            continue
+        used.add(match)
+        native = want[match]
+        for face, spec in (native.get("faces") or {}).items():
+            other = (shipped_element.get("faces") or {}).get(face)
             if other is None:
-                lines.append("element " + str(index) + " face " + face + " missing in shipped")
+                lines.append("element " + str(match) + " face " + face + " missing in shipped")
                 continue
             if spec.get("uv") != other.get("uv"):
-                lines.append("element " + str(index) + " face " + face + " uv "
+                lines.append("element " + str(match) + " face " + face + " uv "
                              + str(spec.get("uv")) + " vs " + str(other.get("uv")))
     return lines[:40]
 
