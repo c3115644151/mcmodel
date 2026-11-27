@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from preview_item_icons import creative_tab_item_ids
+from preview_item_icons import registered_item_ids
 from item_icon_preview import (FACE_VERTICES, face_is_front_facing,
                                apply_alpha_cutout, tinted_water_sprite,
                                load_sprite)
@@ -10,17 +10,21 @@ from preview_item_icons import preview_model_ids
 from PIL import Image
 
 
-class CreativeTabPreviewFilterTests(unittest.TestCase):
-    def test_preview_filter_uses_only_explicit_creative_tab_entries(self):
+class RegisteredItemPreviewFilterTests(unittest.TestCase):
+    def test_preview_filter_uses_registered_item_ids_only(self):
         with tempfile.TemporaryDirectory() as temp:
-            registry = Path(temp) / "src/main/java/com/pastoralhome/registry/ModCreativeTabs.java"
+            registry = Path(temp) / "src/main/java/com/pastoralhome/registry/ModItems.java"
             registry.parent.mkdir(parents=True)
             registry.write_text(
-                "output.accept(ModItems.WEATHER_VANE.get());\n"
-                "output.accept(ModItems.WHEELBARROW.get());\n",
+                'public static final DeferredItem<BlockItem> WEATHER_VANE = '
+                'ITEMS.registerSimpleBlockItem("weather_vane", ModBlocks.WEATHER_VANE);\n'
+                'public static final DeferredItem<BlockItem> WHEELBARROW = '
+                'ITEMS.registerItem("wheelbarrow", WheelbarrowItem::new);\n'
+                '// model components must not be mistaken for items\n'
+                '// a model component, not a registered item: rug_surface_00\n',
                 encoding="utf-8",
             )
-            self.assertEqual(creative_tab_item_ids(Path(temp)), {"weather_vane", "wheelbarrow"})
+            self.assertEqual(registered_item_ids(Path(temp)), {"weather_vane", "wheelbarrow"})
 
     def test_underside_projects_from_low_y_plane(self):
         self.assertTrue(all(vertex[1] == 0 for vertex in FACE_VERTICES["down"]))
