@@ -40,7 +40,8 @@ assert "removeOtherEndpoint" in item or "removeFenceLink" in item
 assert 'dropOther(output, ModBlocks.HANGING_ROPE.get(), ModItems.BRIDGE_ROPE.get())' in loot_provider
 loot = read(ROOT / "src/generated/resources/data/pastoral_home/loot_table/blocks/hanging_rope.json")
 assert loot["pools"][0]["entries"][0]["name"] == "pastoral_home:bridge_rope"
-for locale, expected in (("zh_cn", "吊绳"), ("en_us", "Climbing Rope")):
+for locale, thick, thin in (("zh_cn", "粗绳", "细绳"), ("en_us", "Thick Rope", "Thin Rope")):
     lang = read(ROOT / f"src/generated/resources/assets/pastoral_home/lang/{locale}.json")
-    assert lang["item.pastoral_home.bridge_rope"] == expected
+    assert lang["item.pastoral_home.bridge_rope"] == thick
+    assert lang["item.pastoral_home.thin_bridge_rope"] == thin
 print("Hanging rope verified: authored segment/end meshes, climbable tag, support checks and two-mode interaction hooks.")

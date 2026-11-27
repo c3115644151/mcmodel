@@ -28,6 +28,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import resolve
+from icon_overrides import (apply_screen_offset, apply_yaw_rotation, effective_params,
+                             load_overrides)
 from item_icon_proxy import (
     GUI_ICON_TARGET_PX,
     ITEM_ICON_MANIFEST,
@@ -212,6 +214,7 @@ def main() -> int:
     assets_root = root / "src/main/resources/assets" / mod_id
     items_dir = assets_root / "items"
     requested = {part.strip() for part in args.items.split(",") if part.strip()}
+    overrides = load_overrides(root)
     if not items_dir.is_dir():
         parser.error(f"item definition directory not found: {items_dir}")
 
@@ -259,6 +262,15 @@ def main() -> int:
         if not model_sources:
             report.append({"item": item_id, "status": "skipped_no_local_geometry", "models": model_ids})
             continue
+        # A source override swaps the GUI model outright (e.g. an art-directed
+        # variant). It is resolved like any other model id and must carry geometry.
+        source_override = overrides.get(item_id, {}).get("source")
+        if source_override:
+            model_ids = [source_override]
+            model_sources = collect_model_sources(model_ids, assets_root, mod_id)
+            if not model_sources:
+                report.append({"item": item_id, "status": "skipped_source_override", "models": model_ids})
+                continue
 
         all_elements = [deepcopy(element) for _ref, _source, model, _path in model_sources
                         for element in model.get("elements", [])]
@@ -270,6 +282,13 @@ def main() -> int:
         # >=1 格贴满原版边缘，<1 格按真实比例缩小，不被 inflate 到满格。
         source_longest = max(shared_bounds[i + 3] - shared_bounds[i] for i in range(3))
         item_target_px = gui_icon_target_px(source_longest)
+        # Art-direction overrides: size, anchor, yaw and screen offset. Inferred
+        # from the override file (empty for items nobody tuned), so the automatic
+        # pipeline is unchanged for every other item.
+        params = effective_params(item_id, {"target_px": item_target_px}, overrides)
+        item_target_px = params["target_px"]
+        anchor_override = overrides.get(item_id, {}).get("anchor", "auto")
+        yaw_override, offset_x, offset_y = params["yaw"], params["offset_x"], params["offset_y"]
         source_gui, gui_is_explicit, gui_source = (
             deepcopy(VANILLA_BLOCK_GUI), False, "vanilla_block_gui")
         replacements = {}
@@ -282,6 +301,10 @@ def main() -> int:
             if not normalized:
                 continue
             proxy = normalized["model"]
+            # Extra yaw is a geometry rotation applied before fit, so the vanilla
+            # camera stays authoritative and fit's inverse-projection maths holds.
+            if yaw_override:
+                proxy = apply_yaw_rotation(proxy, yaw_override)
             # normalize_to_block puts every source into the same 3D one-block
             # space; fit_gui_projection then corrects for what the 30-degree GUI
             # camera actually shows (flat, tall and asymmetric shapes all differ
@@ -300,6 +323,10 @@ def main() -> int:
             # 遮阳伞的宽度被 fit 到 15.7px, 但投影高度只有 8.8px。
             proj_h = centred["fit_projected_size"][1]
             floor_anchor = proj_h < GUI_ICON_TARGET_PX * 0.95
+            if anchor_override == "floor":
+                floor_anchor = True
+            elif anchor_override == "center":
+                floor_anchor = False
             if floor_anchor:
                 fitted = fit_gui_projection(proxy, lambda ref: resolve_texture(root, ref),
                                             target_px=item_target_px, floor_anchor=True)
@@ -308,6 +335,16 @@ def main() -> int:
             else:
                 fitted = centred
             proxy = fitted["model"]
+            # Screen-pixel offset is the last step: convert it back into a geometry
+            # translation so display.gui keeps the vanilla camera. The tuner and the
+            # generator use the same icon_overrides.apply_screen_offset helper.
+            if offset_x or offset_y:
+                shifted = apply_screen_offset(proxy, lambda ref: resolve_texture(root, ref),
+                                              offset_x, offset_y, VANILLA_BLOCK_GUI["scale"][0])
+                if shifted is not None:
+                    proxy = shifted
+                else:
+                    report.append({"item": item_id, "status": "skipped_offset", "models": [source_id]})
             normalized["gui_fit"] = fitted
             proxy["parent"] = source_id
             proxy_path = assets_root / "models" / "item_icons" / item_id / f"variant_{variant_index}.json"
@@ -403,6 +440,13 @@ def main() -> int:
             "source_height": round(shared_bounds[4] - shared_bounds[1], 4),
             "gui_target_px": item_target_px,
             "floor_anchor": floor_anchor,
+            # Effective art-direction params, so the validator checks against
+            # what the tuner actually asked for instead of assuming slot centre.
+            "offset_x": offset_x,
+            "offset_y": offset_y,
+            "yaw": yaw_override,
+            "source_override": source_override or None,
+            "overridden": params["overridden"],
         }
 
     if args.apply:

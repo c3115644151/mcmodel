@@ -745,8 +745,9 @@ def rope_network_checks():
     check("if (!slot.lit()) continue;" in entity and "Blocks.LIGHT.defaultBlockState()" in entity
           and "LightBlock.LEVEL" in entity,
           "rope light: only bright lamps place a vanilla light block at the right level")
-    check("level.getBlockState(cell).isAir()" in entity,
-          "rope light: only air cells are lit, so supports and terrain are never overwritten")
+    check("existing.isAir() || existing.getBlock() == Blocks.LIGHT" in entity,
+          "rope light: only air cells or this cord's own light cell are lit, so supports and terrain "
+          "are never overwritten and a steady light does not flicker each tick")
     check("this.syncLightBlocks(serverLevel)" in entity and "clearLightBlocks" in entity
           and "onRemoval(Entity.RemovalReason reason)" in entity,
           "rope light: the cord syncs every tick and clears its lights when removed")

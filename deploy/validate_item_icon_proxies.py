@@ -117,23 +117,29 @@ def check_item(item_path: Path, entry: dict, assets: Path, mod_id: str, root: Pa
                 issues.append(
                     f"{model_id}: visible long edge {long_edge:.2f}px is not fitted to {target_px}px "
                     f"(source {entry.get('source_longest', '?')}u)")
+            # Art-directed offsets move the expected position. The generator
+            # records them in the manifest, so the gate checks against the tuned
+            # target rather than always assuming slot centre/floor with no offset.
+            offset_x = float(entry.get("offset_x", 0.0) or 0.0)
+            offset_y = float(entry.get("offset_y", 0.0) or 0.0)
             centre_x = (final[0] + final[2]) * 0.5
-            if abs(centre_x) > 0.25:
-                issues.append(f"{model_id}: visible icon centre x {centre_x:.2f} is off the slot centre")
+            if abs(centre_x - offset_x) > 0.25:
+                issues.append(
+                    f"{model_id}: visible icon centre x {centre_x:.2f} is not at tuned x {offset_x:.2f}")
             if entry.get("floor_anchor"):
                 # 矮模型贴地: 可见下边缘应对齐满格方块的槽底。final 是槽像素
                 # (已乘 gui_scale), GUI_FLOOR_Y 是投影单位, 需乘同一 scale。
-                floor_px = GUI_FLOOR_Y * gui_scale[1]
+                floor_px = GUI_FLOOR_Y * gui_scale[1] + offset_y
                 bottom = final[3]
                 if abs(bottom - floor_px) > 0.4:
                     issues.append(
-                        f"{model_id}: floor-anchored icon bottom {bottom:.2f}px is not on slot floor "
+                        f"{model_id}: floor-anchored icon bottom {bottom:.2f}px is not on tuned floor "
                         f"{floor_px:.2f}px")
             else:
                 centre_y = (final[1] + final[3]) * 0.5
-                if abs(centre_y) > 0.25:
+                if abs(centre_y - offset_y) > 0.25:
                     issues.append(
-                        f"{model_id}: visible icon centre y {centre_y:.2f} is off the slot centre")
+                        f"{model_id}: visible icon centre y {centre_y:.2f} is not at tuned y {offset_y:.2f}")
         source = load_model_with_parent(path, assets / "models", mod_id)
         if not source or not source.get("elements"):
             issues.append(f"{model_id}: source geometry could not be resolved")
