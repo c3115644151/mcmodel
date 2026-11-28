@@ -66,6 +66,8 @@ SCORE_DATA = ROOT / "src/main/resources/data/pastoral_home/party_lights"
 SHEET_SIZE = (32, 128)
 FRAME = 32
 STATE_FRAMES = {"unlit": 0, "lit": 2}
+# 亮暗分档后模型有四个: 贴图帧仍是源图里的两帧(unlit/lit), 但模型按 level 分档, 两者不是同一把尺。
+MODEL_TIERS = ("dark", "faint", "mid", "full")
 # The artist's sheets carry no authored alpha: every painted texel is 255 and the rest is clear. The
 # frosted paper is the shell sheet's own alpha, which the generator sets on painted texels only so the
 # 1px clear seams stay real holes; the core sheet keeps the artist's 255.
@@ -106,7 +108,18 @@ FACINGS = ("north", "east", "south", "west")
 # Redstone turns the lamps into a display: the controller writes MODE=REMOTE on every lamp it can
 # reach, so the enum and the blockstate both carry five modes, not the three a player can click.
 MODES = ("off", "chase", "steady", "beacon", "remote")
-LIT_STATES = ("false", "true")
+# 亮度分档: 方块状态属性从布尔 lit 改成整数 level 0..12, 每个档位画自己的模型。
+LEVEL_STATES = tuple(str(level) for level in range(0, 13))
+# 控制器仍是布尔 powered, 与灯的分档不是一回事。
+POWERED_STATES = ("false", "true")
+# 与 prepare_party_lights_models.py 的 TIERS 同表: (模型名, 发射光, 覆盖的 level 值)。
+LEVEL_TIERS = (
+    ("dark", 0, (0,)),
+    ("faint", 4, (1, 2, 3)),
+    ("mid", 9, (4, 5, 6, 7, 8)),
+    ("full", 15, (9, 10, 11, 12)),
+)
+TIER_OF_LEVEL = {str(level): name for name, _emission, levels in LEVEL_TIERS for level in levels}
 
 MOUNT_NORMAL = {"up": (0, 1, 0), "down": (0, -1, 0), "north": (0, 0, -1),
                 "south": (0, 0, 1), "east": (1, 0, 0), "west": (-1, 0, 0)}
@@ -176,7 +189,7 @@ def rotate(normal, keys):
 
 
 def geometry_checks():
-    for state in STATE_FRAMES:
+    for state in MODEL_TIERS:
         name = "party_lights_" + state
         path = model_path(state)
         check(path.exists(), "geometry: " + name + ".json exists")
@@ -189,10 +202,14 @@ def geometry_checks():
         order = [element.get("name") for element in model["elements"]]
         check(order == ELEMENT_ORDER,
               "geometry: " + name + " draws core, shell, then hanger " + str(order))
-        check(all(element.get("shade") is False and element.get("light_emission") == 15
-                  for element in model["elements"]),
-              "geometry: " + name + " every element is unshaded and full-bright so the lamp "
-              "shows the artist's texels in any game lighting")
+        # 分档之后亮度是一个轴: 元素仍要 unshaded(否则世界光照会压暗美术texel), 但发射光按档位给,
+        # 0 档不写 light_emission —— 那正是"关掉就不发光"的落点。
+        tier = state if state in dict((t, e) for t, e, _l in LEVEL_TIERS) else None
+        want_emission = dict((t, e) for t, e, _l in LEVEL_TIERS).get(tier)
+        check(all(element.get("shade") is False for element in model["elements"]),
+              "geometry: " + name + " every element is unshaded so the lamp shows the artist's texels")
+        check(all(element.get("light_emission", 0) == want_emission for element in model["elements"]),
+              "geometry: " + name + " elements emit " + str(want_emission) + " so the tier is real")
         if sorted(blocks) != sorted(ELEMENT_ORDER):
             continue
         shell = blocks["shell"]
@@ -245,15 +262,17 @@ def geometry_checks():
 
 def uv_checks():
     artist = load(SOURCE)["elements"]
-    for state in STATE_FRAMES:
+    for state in MODEL_TIERS:
         name = "party_lights_" + state
         path = model_path(state)
         if not path.exists():
             continue
         model = load(path)
         textures = model["textures"]
-        for slot, want in (("lamp_core", "pastoral_home:block/party_lights_core_" + state),
-                           ("lamp_shell", "pastoral_home:block/party_lights_shell_" + state)):
+        # 四档共用两套调色板: 0 档读 unlit, 其余读 lit。
+        palette = "unlit" if state == "dark" else "lit"
+        for slot, want in (("lamp_core", "pastoral_home:block/party_lights_core_" + palette),
+                           ("lamp_shell", "pastoral_home:block/party_lights_shell_" + palette)):
             check(textures.get(slot) == want, "uv: " + name + " " + slot + " reads " + want)
         # Break debris is a derived tile named after the model, shaped by the one repo-wide recipe. It
         # cannot be the lamp sheet: a sheet is 32x32 at best and a 32x128 strip at worst, so debris would
@@ -283,7 +302,7 @@ def uv_checks():
 def sheet_checks():
     # The build's normalizeBlockModelParticles task writes a blurred copy per model at build time, so
     # particle sheets are permitted but never required here.
-    stems = [model_path(state).stem for state in STATE_FRAMES] + ["party_lights_inventory"]
+    stems = [model_path(state).stem for state in MODEL_TIERS] + ["party_lights_inventory"]
     expected = {f"party_lights_{part}_{state}.png" for state in STATE_FRAMES
                 for part in ("core", "shell")}
     expected |= {"party_lights_shell_item.png"}
@@ -358,8 +377,8 @@ def sheet_checks():
 
 def state_checks():
     variants = load(STATE)["variants"]
-    expected = {"attach=" + attach + ",facing=" + facing + ",mode=" + mode + ",lit=" + lit
-                for attach in ATTACHES for facing in FACINGS for mode in MODES for lit in LIT_STATES}
+    expected = {"attach=" + attach + ",facing=" + facing + ",mode=" + mode + ",level=" + level
+                for attach in ATTACHES for facing in FACINGS for mode in MODES for level in LEVEL_STATES}
     check(set(variants) == expected,
           "state: blockstates cover " + str(len(expected)) + " combinations " + str(len(variants)))
     for attach in ATTACHES:
@@ -367,12 +386,12 @@ def state_checks():
         check(target == MOUNT_NORMAL[attach],
               "state: attach " + attach + " turns the hanger onto " + str(MOUNT_NORMAL[attach])
               + ", rotations give " + str(target))
-        for lit in LIT_STATES:
-            want = "pastoral_home:block/party_lights_" + ("lit" if lit == "true" else "unlit")
-            keys = ["attach=" + attach + ",facing=" + facing + ",mode=" + mode + ",lit=" + lit
+        for level in LEVEL_STATES:
+            want = "pastoral_home:block/party_lights_" + TIER_OF_LEVEL[level]
+            keys = ["attach=" + attach + ",facing=" + facing + ",mode=" + mode + ",level=" + level
                     for facing in FACINGS for mode in MODES]
             models = {variants[k].get("model") for k in keys if k in variants}
-            check(models == {want}, "state: attach " + attach + " lit " + lit + " draws " + want)
+            check(models == {want}, "state: attach " + attach + " level " + level + " draws " + want)
             for k in keys:
                 if k not in variants:
                     continue
@@ -385,7 +404,7 @@ def state_checks():
         # the screenshots use reads the shipped blockstate and model, so a flipped quarter turn here
         # fails instead of hanging a wall lamp on the far side of its post.
         low, high = frame_box.world_box("pastoral_home:party_lights",
-                                        {"attach": attach, "facing": "north", "lit": "true",
+                                        {"attach": attach, "facing": "north", "level": "12",
                                          "mode": "steady"}, [0, 0, 0])
         normal = MOUNT_NORMAL[attach]
         axis = [i for i in range(3) if normal[i]][0]
@@ -407,10 +426,11 @@ def state_checks():
 def declared_properties():
     text = BLOCK.read_text(encoding="utf-8")
     names = set(m.group(1) for m in re.finditer(r'EnumProperty\.create\("(\w+)"', text))
+    # 亮度档位是 IntegerProperty("level", 0, 12), 不是枚举; 漏掉它会让"blockstate 问的属性和方块声明
+    # 的不一致"这条检查永远报假失败。
+    names |= set(m.group(1) for m in re.finditer(r'IntegerProperty\.create\("(\w+)"', text))
     if "BlockStateProperties.HORIZONTAL_FACING" in text:
         names.add("facing")
-    if "BlockStateProperties.LIT" in text:
-        names.add("lit")
     return names
 
 
@@ -461,7 +481,7 @@ def item_checks():
     is opened by a translucent sheet, which keeps the bulb visible through the paper.
     """
     all_faces = {"north", "south", "east", "west", "up", "down"}
-    placed = load(model_path("lit"))
+    placed = load(model_path("full"))
     inventory = load(MODELS / "party_lights_inventory.json")
     for model, label in ((placed, "placed"), (inventory, "item")):
         shells = [element for element in model["elements"] if element.get("name") == "shell"]
@@ -478,7 +498,12 @@ def item_checks():
         for part in ("core", "neck"):
             twin = [element for element in model["elements"] if element.get("name") == part]
             check(len(twin) == 1, "item: " + label + " model has one " + part + " element")
-    check(inventory["elements"] == placed["elements"],
+    # 手持模型不带 light_emission: 亮度是世界里的事, 物品栏里的图标没有"发多少光"。几何与 UV 必须逐一相同。
+    def geometry_only(elements):
+        return [{key: value for key, value in element.items() if key != "light_emission"}
+                for element in elements]
+
+    check(geometry_only(inventory["elements"]) == geometry_only(placed["elements"]),
           "item: the held copy is the placed geometry, element for element")
     shell_sheet = inventory["textures"].get("lamp_shell", "")
     check(shell_sheet == "pastoral_home:block/party_lights_shell_item",
@@ -522,7 +547,7 @@ def display_checks():
               "display: " + context + " keeps vanilla's offset " + str(translation))
         check([round(float(value), 4) for value in entry.get("scale", [])] == scale,
               "display: " + context + " keeps vanilla's scale " + str(scale))
-    for state in STATE_FRAMES:
+    for state in MODEL_TIERS:
         placed = load(model_path(state))
         check("display" not in placed,
               "display: the placed " + state + " model declares no display block, which nothing reads")
@@ -541,11 +566,12 @@ def particle_checks():
     up is what rained staircases - hence a single opaque colour per tile rather than a palette.
     """
     lamp_colours = set()
+    # 壳体调色板仍只有两套贴图(unlit/lit), 四档模型共用; 按档位去找贴图会找不到文件。
     for state in STATE_FRAMES:
         with Image.open(TEXTURES / ("party_lights_shell_" + state + ".png")) as opened:
             lamp_colours |= {texel[:3] for texel in opened.convert("RGBA").getdata() if texel[3] > 127}
-    for state, model_name in ([(s, "party_lights_" + s) for s in STATE_FRAMES]
-                              + [("lit", "party_lights_inventory")]):
+    for state, model_name in ([(s, "party_lights_" + s) for s in MODEL_TIERS]
+                              + [("full", "party_lights_inventory")]):
         name = model_name + "_particle"
         path = TEXTURES / (name + ".png")
         check(path.exists(), "particle: " + name + ".png exists")
@@ -565,7 +591,7 @@ def particle_checks():
               + str(sorted(colours)))
         check(colours <= lamp_colours,
               "particle: " + name + " takes a colour from the lamp sheet " + str(sorted(colours)))
-    for state in ("unlit", "lit", "inventory"):
+    for state in MODEL_TIERS + ("inventory",):
         model = load(MODELS / ("party_lights_" + state + ".json"))
         want = "pastoral_home:block/party_lights_" + state + "_particle"
         check(model["textures"].get("particle") == want,
@@ -591,7 +617,8 @@ def hanger_checks():
         match = re.search(name + r"\s*=\s*([^;]+);", source)
         values[name] = match.group(1).strip() if match else None
         check(bool(match), "hanger: BridgeRopeRenderer declares " + name)
-    placed = load(MODELS / "party_lights_lit.json")
+    # 亮度分档之后没有单一的"亮灯"模型: 取最亮一档做吊挂几何基准, 它的元素布局与暗档相同。
+    placed = load(MODELS / "party_lights_full.json")
     lows = [element["from"] for element in placed["elements"]]
     highs = [element["to"] for element in placed["elements"]]
     top = max(high[1] for high in highs)
@@ -613,12 +640,12 @@ def controller_checks():
     """The redstone face: a procedurally drawn controller whose eight states and program table hold."""
     variants = load(CONTROLLER_STATE)["variants"]
     expected = {"facing=" + facing + ",powered=" + powered + ",priority=" + priority
-                for facing in FACINGS for powered in LIT_STATES for priority in CONTROLLER_PRIORITIES}
+                for facing in FACINGS for powered in POWERED_STATES for priority in CONTROLLER_PRIORITIES}
     check(set(variants) == expected,
           "controller: blockstate covers " + str(len(expected)) + " combinations, got " + str(len(variants)))
     yaw = {"north": 0, "east": 90, "south": 180, "west": 270}
     for facing in FACINGS:
-        for powered in LIT_STATES:
+        for powered in POWERED_STATES:
             for priority in CONTROLLER_PRIORITIES:
                 key = "facing=" + facing + ",powered=" + powered + ",priority=" + priority
                 variant = variants.get(key, {})

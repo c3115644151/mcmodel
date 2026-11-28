@@ -44,7 +44,7 @@ PIECES = {
         "gate": "party_lights_report.py",
         "job": "build/probes/jobs/lamp_frost2.json",
         "crop": (860, 380, 1060, 700),
-        "model": "party_lights_lit",
+        "model": "party_lights_full",
         "frame": 2,
         # The GUI icon is a separate generated artifact (a proxy under models/item_icons) and it
         # reads the item copy's own sheet, so regenerating the piece has to refresh it too.
