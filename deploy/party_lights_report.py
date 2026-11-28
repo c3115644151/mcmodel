@@ -772,9 +772,10 @@ def rope_network_checks():
     check("private void syncLightBlocks(ServerLevel level)" in entity
           and "BridgeRopeLamps.layout(start, end, ts, this.lampMode()" in entity,
           "rope light: the lit set comes from the same layout the client renderer draws")
-    check("if (!slot.lit()) continue;" in entity and "Blocks.LIGHT.defaultBlockState()" in entity
-          and "LightBlock.LEVEL" in entity,
-          "rope light: only bright lamps place a vanilla light block at the right level")
+    check("if (!slot.lit() || emitted <= 0) continue;" in entity
+          and "PartyLightsBlock.lightOf(drive.brightness())" in entity
+          and "Blocks.LIGHT.defaultBlockState()" in entity and "LightBlock.LEVEL" in entity,
+          "rope light: only bright lamps place a vanilla light block, at the brightness the axis gives")
     check("existing.isAir() || existing.getBlock() == Blocks.LIGHT" in entity,
           "rope light: only air cells or this cord's own light cell are lit, so supports and terrain "
           "are never overwritten and a steady light does not flicker each tick")
