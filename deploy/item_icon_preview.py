@@ -60,11 +60,36 @@ SHADE_FLAT = {"up": 1.0, "down": 1.0, "north": 1.0, "south": 1.0,
 SHADE_PROFILES = {"game": SHADE_GAME, "flat": SHADE_FLAT}
 FACE_SHADE = SHADE_GAME
 
+# 强度是 game 表的线性插值系数：0 = 不乘明暗（等同 flat），1 = 真机实测值，
+# 允许 >1（压得更狠）。单物品常常两者都不满意——火盆这类自带亮面的模型开 1.0 发暗、
+# 关掉又发亮，需要中间值，所以档位从"二选一"改成连续量。
+SHADE_STRENGTH_MIN = 0.0
+SHADE_STRENGTH_MAX = 1.5
 
-def shade_profile(name: str | None) -> dict[str, float]:
-    """Resolve a shading profile name; unknown/None falls back to the game table."""
+
+def clamp_shade_strength(strength: float) -> float:
+    try:
+        value = float(strength)
+    except (TypeError, ValueError):
+        return 1.0
+    return max(SHADE_STRENGTH_MIN, min(SHADE_STRENGTH_MAX, value))
+
+
+def shade_strength_profile(strength: float) -> dict[str, float]:
+    """Per-face multipliers at a shading strength (linear between flat and game)."""
+    factor = clamp_shade_strength(strength)
+    return {face: round(1.0 - factor * (1.0 - value), 4)
+            for face, value in SHADE_GAME.items()}
+
+
+def shade_profile(name: str | None = None, strength: float | None = None) -> dict[str, float]:
+    """Resolve a shading profile; an explicit strength wins over the named profile."""
+    if strength is not None:
+        return shade_strength_profile(strength)
     if not name:
         return SHADE_GAME
+    if str(name) == "flat":
+        return SHADE_FLAT
     return SHADE_PROFILES.get(str(name), SHADE_GAME)
 
 # 面朝向的编号，用于把真机与离线的色差按面归因（诊断脚本 diag_gui_shading.py）。

@@ -9,7 +9,8 @@ from item_icon_preview import (FACE_VERTICES, SHADE_FLAT, SHADE_GAME, _mat_apply
                                apply_alpha_cutout, apply_root_transform,
                                face_is_front_facing, gui_rotation_matrix,
                                gui_screen_point, load_sprite, render_projected_icon,
-                               root_origin, shade_profile, tinted_water_sprite)
+                               root_origin, shade_profile, shade_strength_profile,
+                               tinted_water_sprite)
 from PIL import Image
 
 
@@ -205,6 +206,24 @@ class ShadeProfileTests(unittest.TestCase):
             flat_px = np.asarray(flat)[:, :, :3]
             self.assertAlmostEqual(float(game_px[north].mean() / flat_px[north].mean()), 0.40, places=2)
             self.assertAlmostEqual(float(game_px[up].mean() / flat_px[up].mean()), 1.0, places=2)
+
+    def test_strength_is_a_continuous_dial(self):
+        # 0 = flat, 1 = 实测值, 1.5 = 更狠；中间值按线性插值，且显式强度优先于档位名。
+        self.assertEqual(shade_strength_profile(0.0), SHADE_FLAT)
+        self.assertEqual(shade_strength_profile(1.0), SHADE_GAME)
+        self.assertEqual(shade_strength_profile(0.5)["north"], 0.70)
+        self.assertEqual(shade_strength_profile(0.5)["east"], 0.825)
+        self.assertEqual(shade_strength_profile(0.5)["up"], 1.0)
+        self.assertEqual(shade_strength_profile(1.5)["north"], 0.10)
+        self.assertEqual(shade_profile("flat", 1.0), SHADE_GAME)
+        self.assertEqual(shade_profile("game", 0.0), SHADE_FLAT)
+        # 越界钳制，非法值退回默认强度。
+        self.assertEqual(shade_strength_profile(9.0), shade_strength_profile(1.5))
+        self.assertEqual(shade_strength_profile(-3.0), SHADE_FLAT)
+        self.assertEqual(shade_strength_profile("nonsense"), SHADE_GAME)
+        # 强度越低整体越亮：亮面恒定，侧面单调。
+        ladder = [shade_strength_profile(s)["north"] for s in (0.0, 0.25, 0.5, 0.75, 1.0)]
+        self.assertEqual(ladder, sorted(ladder, reverse=True))
 
 
 if __name__ == "__main__":
