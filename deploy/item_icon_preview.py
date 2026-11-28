@@ -35,18 +35,54 @@ FACE_VERTICES = {
 # 会被画成实心块，背面也会盖住正面细节。
 GUI_VIEW_DIR = (1.0, math.sqrt(2.0) * math.tan(math.radians(30.0)), -1.0)
 
-# Minecraft 的镂空/半透明纹理走 ALPHA_CUTOUT 0.5：alpha>=128 的像素完全
-# 显示、其余完全丢弃，没有平滑过渡。预览若做 alpha 混合，会在地毯/灯罩边缘
-# 混出白色半透明锯齿，和游戏里的硬边不一致。
-ALPHA_CUTOUT = 128
+# 镂空（cutout）渲染类型的丢弃阈值是 alpha < 0.1，不是 0.5：原版
+# rendertype_cutout 的片元着色器写的是 "if (color.a < 0.1) discard;"，保留下来的
+# 像素以原色直接写入（cutout 不开混合，所以半透明像素显示为全色）。阈值取 128
+# 会把 0.1–0.5 之间的像素整片丢掉，地毯、灯罩和花架的边缘因此比游戏里窄一圈。
+ALPHA_CUTOUT = 26
 
-# Minecraft 在烘焙模型时把方向明暗直接乘进 quad 顶点色（FaceBakery），GUI 物品
-# 渲染沿用烘焙结果，所以图标上的明暗与光照/天空光无关，是固定的方向常量：
-# up 1.0、down 0.5、north/south 0.8、east/west 0.6。南北、东西同值——预览原先
-# 用了南北 0.78/0.88、东西 0.68/0.92 的不对称手调值，那是把离线的光照补偿混进了
-# 明暗系数，和游戏渲染对不上。
-FACE_SHADE = {"up": 1.0, "down": 0.5, "north": 0.8, "south": 0.8,
-              "west": 0.6, "east": 0.6}
+# GUI 物品图标没有任何方向明暗：ItemFeatureRenderer.renderItem 把烘焙 quad 直接
+# putBakedQuad 到 render type 缓冲，只传 light coords（GUI 为 FULL_BRIGHT）与图层
+# tint，从不读 quad 的 materialInfo().shade()。那个 shade 标志的唯一消费者是
+# BlockModelLighter（方块/区块渲染，见 BlockModelLighter.java:207 与 :220），
+# 走不到物品路径。所以图标上每个面都是全亮：面颜色 = 纹理色 × tint。
+# 之前按 FaceBakery 的方向常量（up 1.0 / down 0.5 / 南北 0.8 / 东西 0.6）乘一遍，
+# 恰好让侧面多的图标整体偏暗约 20%，这就是「剪影 IoU=1.000 但 rgb 差 40+」的来源。
+SHADE_GAME = {"up": 1.0, "down": 1.0, "north": 0.40, "south": 0.40,
+             "west": 0.60, "east": 0.65}
+SHADE_FLAT = {"up": 1.0, "down": 1.0, "north": 1.0, "south": 1.0,
+              "west": 1.0, "east": 1.0}
+
+# 真机实测的有效明暗表（见 diag_gui_shading.py 与 design/item-icon-gui.md）：
+# 把真机截图的像素按面归类后除以平面渲染，n/s=0.40、e/w=0.60/0.65、up/down=1.0，
+# 且该倍率在各亮度带恒定（纯乘法，不是 gamma）。这是默认档，离线预览据此与游戏对齐。
+# 某些模型（薄片、贴花、金属反光面）加上阴影反而更难看，可以按物品切到 flat。
+SHADE_PROFILES = {"game": SHADE_GAME, "flat": SHADE_FLAT}
+FACE_SHADE = SHADE_GAME
+
+
+def shade_profile(name: str | None) -> dict[str, float]:
+    """Resolve a shading profile name; unknown/None falls back to the game table."""
+    if not name:
+        return SHADE_GAME
+    return SHADE_PROFILES.get(str(name), SHADE_GAME)
+
+# 面朝向的编号，用于把真机与离线的色差按面归因（诊断脚本 diag_gui_shading.py）。
+# 面 ID 缓冲区里存的是 element_index * 8 + 方向编号，这样同一方向但来自不同
+# element 的面不会混在一起；方向用 id % 8 还原，element 用 id // 8。
+# 0 保留为空像素。
+FACE_IDS = {"down": 1, "up": 2, "north": 3, "south": 4, "west": 5, "east": 6}
+
+
+def np_zero_ids(size: int):
+    """Face-id buffer (uint8) for shading diagnostics; None when numpy is absent."""
+    try:
+        import numpy as np
+    except ModuleNotFoundError as error:
+        if error.name != "numpy":
+            raise
+        return None
+    return np.zeros((size, size), dtype=np.uint16)
 
 
 def apply_alpha_cutout(image: Image.Image) -> Image.Image:
@@ -330,7 +366,8 @@ def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | 
                          pixels_per_unit: float | None = None,
                          projection_offset: tuple[float, float] = (0.0, 0.0),
                          camera_distance: float = 48.0,
-                         face_shade: dict[str, float] | None = None) -> Image.Image:
+                         face_shade: dict[str, float] | None = None,
+                         return_face_ids: bool = False):
     """Render a textured isometric icon approximation for visual batch QA.
 
     Uses source face UVs, texture alpha, an orthographic GUI projection, sorted
@@ -341,7 +378,7 @@ def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | 
         face_shade = FACE_SHADE
     quads = []
     offset_for_buffer = projection_offset
-    for element in model.get("elements", []):
+    for element_index, element in enumerate(model.get("elements", [])):
         for face_name, face in element.get("faces", {}).items():
             if face_name not in FACE_VERTICES or not isinstance(face, dict):
                 continue
@@ -389,7 +426,8 @@ def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | 
                     u = uv[0] if index in (0, 1) else uv[2]
                     v = uv[1] if index in (0, 3) else uv[3]
                     uv_points.append((u * texture.width / 16.0, v * texture.height / 16.0))
-            quads.append((depth, face_name, projected, texture, uv_points, depths))
+            quads.append((depth, face_name, projected, texture, uv_points, depths,
+                          element_index))
 
     # GUI 等轴测默认走逐像素 z-buffer：Minecraft 用深度缓冲决定遮挡，与 quad
     # 顺序无关；painter/元素顺序都无法同时正确处理所有模型（床要元素顺序、
@@ -401,9 +439,11 @@ def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | 
         # pixels_per_unit 默认 None 在这里解析；painter 路径也会再次解析，
         # 但 z-buffer 路径在调用前就要用到它，不能把 None 传进去。
         ppm = pixels_per_unit or (size / 16.0)
+        ids = np_zero_ids(size) if return_face_ids else None
         try:
-            return _render_projected_depth_buffer(quads, size, face_shade, view,
-                                                  ppm, offset_for_buffer)
+            image = _render_projected_depth_buffer(quads, size, face_shade, view,
+                                                   ppm, offset_for_buffer, ids)
+            return (image, ids) if return_face_ids else image
         except ModuleNotFoundError as error:
             if error.name != "numpy":
                 raise
@@ -411,6 +451,7 @@ def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | 
             # environment. The painter fallback is approximate for intersecting
             # translucent faces, but is adequate for ordinary opaque BB cubes.
 
+    ids = np_zero_ids(size) if return_face_ids else None
     output = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     pixels_per_unit = pixels_per_unit or (size / 16.0)
     # Minecraft 的方块模型没有逐 quad 深度排序：同一 render type 内就是按
@@ -422,7 +463,8 @@ def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | 
     if view != "isometric":
         reverse_depth = view in ("front", "side", "perspective_front")
         quads = sorted(quads, key=lambda item: item[0], reverse=reverse_depth)
-    for _depth, face_name, projected, texture, uv_points, _vertex_depths in quads:
+    for (_depth, face_name, projected, texture, uv_points, _vertex_depths,
+         _element_index) in quads:
         destination = [(size / 2 + (x + projection_offset[0]) * pixels_per_unit,
                         size / 2 + (y + projection_offset[1]) * pixels_per_unit) for x, y in projected]
         left = max(0, int(min(p[0] for p in destination)) - 1)
@@ -457,11 +499,12 @@ def render_projected_icon(model: dict, texture_resolver: Callable[[str], Path | 
         layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         layer.alpha_composite(face_image, (left, top))
         output = Image.alpha_composite(output, layer)
-    return output
+    return (output, ids) if return_face_ids else output
 
 
 def _render_projected_depth_buffer(quads, size: int, face_shade: dict[str, float], view: str,
-                                   pixels_per_unit: float, projection_offset: tuple[float, float]) -> Image.Image:
+                                   pixels_per_unit: float, projection_offset: tuple[float, float],
+                                   face_ids_out=None) -> Image.Image:
     """Rasterize projected faces per pixel: barycentric depth, UV, texel fetch.
 
     A single perspective transform per quad (Pillow) cannot sample a face whose UV
@@ -483,7 +526,8 @@ def _render_projected_depth_buffer(quads, size: int, face_shade: dict[str, float
     depth_init = -np.inf if keep_max else np.inf
     cutout = ALPHA_CUTOUT / 255.0
 
-    for _average_depth, face_name, projected, texture, uv_points, vertex_depths in quads:
+    for (_average_depth, face_name, projected, texture, uv_points, vertex_depths,
+         element_index) in quads:
         destination = [(size / 2 + (x + projection_offset[0]) * pixels_per_unit,
                         size / 2 + (y + projection_offset[1]) * pixels_per_unit) for x, y in projected]
         left = max(0, int(math.floor(min(p[0] for p in destination))))
@@ -504,6 +548,9 @@ def _render_projected_depth_buffer(quads, size: int, face_shade: dict[str, float
         region_depth = z_buffer[top:bottom, left:right]
         region_rgb = output[top:bottom, left:right]
         region_alpha = alpha_buffer[top:bottom, left:right]
+        region_ids = (face_ids_out[top:bottom, left:right]
+                      if face_ids_out is not None else None)
+        face_id = element_index * 8 + FACE_IDS.get(face_name, 0)
 
         for triangle in ((0, 1, 2), (0, 2, 3)):
             points = [destination[index] for index in triangle]
@@ -529,6 +576,8 @@ def _render_projected_depth_buffer(quads, size: int, face_shade: dict[str, float
                 region_rgb[closer] = flat
                 region_alpha[closer] = 1.0
                 region_depth[closer] = compare_depth[closer]
+                if region_ids is not None:
+                    region_ids[closer] = face_id
                 continue
 
             u = (w0 * uv_points[triangle[0]][0] + w1 * uv_points[triangle[1]][0]
@@ -545,6 +594,8 @@ def _render_projected_depth_buffer(quads, size: int, face_shade: dict[str, float
             region_rgb[opaque] = texel[:, :, :3][opaque] * shade
             region_alpha[opaque] = 1.0
             region_depth[opaque] = compare_depth[opaque]
+            if region_ids is not None:
+                region_ids[opaque] = face_id
 
     rgba = np.zeros((size, size, 4), dtype=np.uint8)
     rgba[:, :, :3] = np.clip(output * 255.0, 0, 255).astype(np.uint8)

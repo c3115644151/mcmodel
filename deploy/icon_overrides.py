@@ -36,8 +36,11 @@ from typing import Any
 OVERRIDE_FILENAME = "item_icon_overrides.json"
 OVERRIDE_VERSION = 1
 
-FIELDS = ("source", "target_px", "anchor", "yaw", "offset_x", "offset_y", "note")
+FIELDS = ("source", "target_px", "anchor", "yaw", "offset_x", "offset_y", "shade", "note")
 ANCHOR_CHOICES = ("auto", "center", "floor")
+# 明暗档：game = 与游戏一致的逐面明暗（默认），flat = 不乘明暗。
+# 只影响预览/缩略图的观感，不改几何，也不进 proxy。
+SHADE_CHOICES = ("game", "flat")
 
 
 def overrides_path(root: Path) -> Path:
@@ -60,6 +63,9 @@ def load_overrides(root: Path) -> dict[str, dict[str, Any]]:
         anchor = entry.get("anchor")
         if anchor is not None and anchor not in ANCHOR_CHOICES:
             raise ValueError(f"{path}: {item_id}.anchor must be one of {ANCHOR_CHOICES}")
+        shade = entry.get("shade")
+        if shade is not None and shade not in SHADE_CHOICES:
+            raise ValueError(f"{path}: {item_id}.shade must be one of {SHADE_CHOICES}")
         for key in ("target_px", "yaw", "offset_x", "offset_y"):
             if key in entry and not isinstance(entry[key], (int, float)):
                 raise ValueError(f"{path}: {item_id}.{key} must be a number")
@@ -94,6 +100,7 @@ def effective_params(item_id: str, auto: dict[str, Any],
         "offset_x": 0.0,
         "offset_y": 0.0,
         "source": None,
+        "shade": "game",
         "note": "",
     }
     override = overrides.get(item_id, {})
@@ -109,6 +116,8 @@ def effective_params(item_id: str, auto: dict[str, Any],
             out[key] = float(override[key])
     if "source" in override:
         out["source"] = override["source"]
+    if "shade" in override:
+        out["shade"] = override["shade"]
     if "note" in override:
         out["note"] = str(override["note"])
     out["overridden"] = bool(override)

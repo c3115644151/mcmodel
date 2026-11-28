@@ -5,10 +5,11 @@ from pathlib import Path
 
 from preview_item_icons import preview_model_ids, registered_item_ids
 from item_icon_proxy import VANILLA_BLOCK_GUI
-from item_icon_preview import (FACE_VERTICES, _mat_apply, apply_alpha_cutout,
-                               apply_root_transform, face_is_front_facing,
-                               gui_rotation_matrix, gui_screen_point, load_sprite,
-                               render_projected_icon, root_origin, tinted_water_sprite)
+from item_icon_preview import (FACE_VERTICES, SHADE_FLAT, SHADE_GAME, _mat_apply,
+                               apply_alpha_cutout, apply_root_transform,
+                               face_is_front_facing, gui_rotation_matrix,
+                               gui_screen_point, load_sprite, render_projected_icon,
+                               root_origin, shade_profile, tinted_water_sprite)
 from PIL import Image
 
 
@@ -67,12 +68,13 @@ class RegisteredItemPreviewFilterTests(unittest.TestCase):
             self.assertEqual(face_is_front_facing(neg, face, rot),
                              face_is_front_facing(pos, face, rot), face)
 
-    def test_alpha_cutout_is_binary(self):
-        # Minecraft 的 ALPHA_CUTOUT 0.5：alpha>=128 全显、其余全隐，
-        # 没有半透明过渡，否则预览会在镂空纹理边缘混出白边。
+    def test_alpha_cutout_is_binary_at_the_shader_threshold(self):
+        # 原版 cutout 片元着色器是 "if (color.a < 0.1) discard;"，保留的像素以原色
+        # 直接写入（不开混合）。阈值是 26，不是 128 —— 用 128 会把 0.1–0.5 的像素
+        # 整片丢掉，镂空边缘比游戏里窄一圈。
         img = Image.new("RGBA", (3, 1), (0, 0, 0, 0))
-        img.putpixel((0, 0), (255, 255, 255, 127))
-        img.putpixel((1, 0), (255, 255, 255, 128))
+        img.putpixel((0, 0), (255, 255, 255, 25))
+        img.putpixel((1, 0), (255, 255, 255, 26))
         img.putpixel((2, 0), (255, 255, 255, 255))
         out = apply_alpha_cutout(img)
         self.assertEqual([out.getpixel((i, 0))[3] for i in range(3)], [0, 255, 255])
@@ -157,6 +159,52 @@ class RasterizerSamplingTests(unittest.TestCase):
                                          tuple(VANILLA_BLOCK_GUI["rotation"]), size=64)
             painted = sum(1 for value in icon.getchannel("A").get_flattened_data() if value)
             self.assertGreater(painted, 0)
+
+
+class ShadeProfileTests(unittest.TestCase):
+    def test_game_profile_matches_the_measured_capture(self):
+        # Fitted by diag_gui_shading.py from a real container capture: horizontal
+        # faces come out at 0.40 of their flat colour, east 0.65, up/down 1.0. If
+        # someone "fixes" this table back to FaceBakery's 0.8 constants, the icons
+        # stop matching the game again, so pin it.
+        self.assertEqual(SHADE_GAME["north"], 0.40)
+        self.assertEqual(SHADE_GAME["south"], 0.40)
+        self.assertEqual(SHADE_GAME["east"], 0.65)
+        self.assertEqual(SHADE_GAME["up"], 1.0)
+        self.assertEqual(shade_profile("flat"), SHADE_FLAT)
+        self.assertEqual(shade_profile(None), SHADE_GAME)
+        self.assertEqual(shade_profile("nonsense"), SHADE_GAME)
+
+    def test_game_shading_darkens_side_faces_only(self):
+        with tempfile.TemporaryDirectory() as temp:
+            sprite_path = Path(temp) / "sprite.png"
+            Image.new("RGBA", (16, 16), (200, 200, 200, 255)).save(sprite_path)
+            model = {
+                "textures": {"t": "pastoral_home:block/cube"},
+                "elements": [{"from": [0, 0, 0], "to": [16, 16, 16],
+                              "faces": {name: {"uv": [0, 0, 16, 16], "texture": "#t"}
+                                        for name in ("north", "east", "up")}}],
+                "display": {"gui": dict(VANILLA_BLOCK_GUI)},
+            }
+            scale = tuple(VANILLA_BLOCK_GUI["scale"])
+            rotation = tuple(VANILLA_BLOCK_GUI["rotation"])
+            game = render_projected_icon(model, lambda _ref: sprite_path, scale, rotation,
+                                        size=64, face_shade=shade_profile("game"))
+            flat = render_projected_icon(model, lambda _ref: sprite_path, scale, rotation,
+                                        size=64, face_shade=shade_profile("flat"))
+            # The north face occupies the left half of the cube silhouette; sampling it
+            # in both renders shows the measured factor 0.40 and leaves up at 1.0.
+            import numpy as np
+            ids = None
+            _, ids = render_projected_icon(model, lambda _ref: sprite_path, scale, rotation,
+                                           size=64, face_shade=shade_profile("flat"),
+                                           return_face_ids=True)
+            north = (ids % 8) == 3
+            up = (ids % 8) == 2
+            game_px = np.asarray(game)[:, :, :3]
+            flat_px = np.asarray(flat)[:, :, :3]
+            self.assertAlmostEqual(float(game_px[north].mean() / flat_px[north].mean()), 0.40, places=2)
+            self.assertAlmostEqual(float(game_px[up].mean() / flat_px[up].mean()), 1.0, places=2)
 
 
 if __name__ == "__main__":

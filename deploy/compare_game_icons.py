@@ -36,19 +36,27 @@ from preview_item_icons import preview_model_ids
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# Vanilla bakes these into quad vertex colour in FaceBakery: up 1.0, down 0.5,
-# north/south 0.8, east/west 0.6. The preview grew a hand-tuned asymmetric set
-# because it also stood in for lighting; AB-test both before changing anything.
+# GUI item rendering applies no face shading: ItemFeatureRenderer.renderItem
+# emits baked quads straight to the item render type with light coords and layer
+# tint only, and materialInfo().shade() is read solely by BlockModelLighter
+# (block/chunk path). "flat" is therefore the parity table; the other two exist
+# so the residual can be measured against the old assumptions, not as options.
+from item_icon_preview import SHADE_FLAT, SHADE_GAME
+
 SHADING = {
-    "legacy": {"up": 1.0, "down": 0.55, "north": 0.78, "south": 0.88,
-               "west": 0.68, "east": 0.92},
+    # What the game actually does; fitted by tools/deploy/diag_gui_shading.py.
+    "game": SHADE_GAME,
+    "flat": SHADE_FLAT,
     "vanilla": {"up": 1.0, "down": 0.5, "north": 0.8, "south": 0.8,
                 "west": 0.6, "east": 0.6},
+    "legacy": {"up": 1.0, "down": 0.55, "north": 0.78, "south": 0.88,
+               "west": 0.68, "east": 0.92},
 }
 
 
 def offline_icon(root: Path, assets_root: Path, item_id: str, size: int,
-                 mod_id: str, face_shade: dict[str, float]) -> Image.Image | None:
+                 mod_id: str, face_shade: dict[str, float],
+                 return_face_ids: bool = False):
     item_path = assets_root / "items" / f"{item_id}.json"
     if not item_path.is_file():
         return None
@@ -69,15 +77,26 @@ def offline_icon(root: Path, assets_root: Path, item_id: str, size: int,
         rotation = tuple(gui_transform.get("rotation", VANILLA_BLOCK_GUI["rotation"]))
         translation = tuple(gui_transform.get("translation", (0.0, 0.0, 0.0)))
         offset = project_gui_translation(translation, rotation)
-        layers.append(render_projected_icon(model, lambda ref: resolve_texture(root, ref),
-                                            scale, rotation, size=size, projection_offset=offset,
-                                            face_shade=face_shade))
+        rendered = render_projected_icon(model, lambda ref: resolve_texture(root, ref),
+                                         scale, rotation, size=size, projection_offset=offset,
+                                         face_shade=face_shade,
+                                         return_face_ids=return_face_ids)
+        layers.append(rendered)
     if not layers:
         return None
     icon = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    ids = None
+    if return_face_ids:
+        import numpy as np
+        ids = np.zeros((size, size), dtype=np.uint16)
     for layer in layers:
+        if return_face_ids:
+            layer, layer_ids = layer
+            if layer_ids is not None:
+                present = np.asarray(layer.getchannel("A")) > 0
+                ids[present] = layer_ids[present]
         icon = Image.alpha_composite(icon, layer)
-    return icon
+    return (icon, ids) if return_face_ids else icon
 
 
 def silhouette(pixels: np.ndarray) -> np.ndarray:
@@ -141,7 +160,7 @@ def main() -> int:
     parser.add_argument("--sheet", default="build/shots/icon_diff.png")
     parser.add_argument("--items", default="", help="comma-separated ids; default all")
     parser.add_argument("--limit", type=int, default=0)
-    parser.add_argument("--shade", choices=sorted(SHADING), default="vanilla")
+    parser.add_argument("--shade", choices=sorted(SHADING), default="game")
     parser.add_argument("--groups-per-row", type=int, default=4)
     args = parser.parse_args()
 

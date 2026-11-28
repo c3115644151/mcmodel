@@ -29,11 +29,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import resolve
 from item_ids import official_items
-from icon_overrides import (apply_screen_offset, apply_yaw_rotation, effective_params,
-                             load_overrides, save_overrides)
+from icon_overrides import (FIELDS, apply_screen_offset, apply_yaw_rotation,
+                             effective_params, load_overrides, save_overrides)
 from item_icon_proxy import (VANILLA_BLOCK_GUI, geometry_bounds, gui_icon_target_px,
                               normalize_to_block, fit_gui_projection)
-from item_icon_preview import (render_projected_icon, visible_projected_measurements)
+from item_icon_preview import (render_projected_icon, shade_profile,
+                               visible_projected_measurements)
 from normalize_item_icons import (collect_model_sources, resolve_model,
                                    load_model_with_parent, resolve_texture,
                                    collect_model_ids, source_model_id)
@@ -86,13 +87,22 @@ def item_ids() -> list[str]:
     return ids
 
 
-def render_thumb(item_id: str) -> str | None:
+def item_shade(item_id: str, overrides: dict[str, Any] | None = None) -> str:
+    """Shading profile for an item: its override, else the game-matching default."""
+    table = overrides if overrides is not None else load_overrides(ROOT)
+    return str(table.get(item_id, {}).get("shade", "game"))
+
+
+def render_thumb(item_id: str, shade: str | None = None) -> str | None:
     """Render the fitted proxy already on disk (no fit pass); base64 PNG or None."""
     path = ASSETS / "models/item_icons" / item_id / "variant_0.json"
     if not path.is_file():
         return None
+    shade = shade or item_shade(item_id)
     stat = path.stat()
-    stamp = (stat.st_mtime_ns, stat.st_size)
+    # The shade profile changes the pixels but not the proxy file, so it belongs in
+    # the cache key; keying on mtime alone would serve a stale-lit thumbnail.
+    stamp = (stat.st_mtime_ns, stat.st_size, shade)
     cached = _THUMB_CACHE.get(item_id)
     if cached and cached[0] == stamp:
         return cached[1]
@@ -101,7 +111,8 @@ def render_thumb(item_id: str) -> str | None:
     try:
         # Full 16px slot canvas, icon at its true in-slot proportion. No cropping:
         # each grid cell is one complete vanilla slot, exactly what the player sees.
-        image = render_projected_icon(model, resolver, size=ICON_SIZE)
+        image = render_projected_icon(model, resolver, size=ICON_SIZE,
+                                      face_shade=shade_profile(shade))
     except Exception:
         return None
     data = base64.b64encode(png_response(image)).decode("ascii")
@@ -141,7 +152,7 @@ def auto_params(item_id: str) -> dict[str, Any]:
     return {"target_px": gui_icon_target_px(longest), "floor_anchor": False, "source": None}
 
 
-def render_icon(item_id: str, candidate: dict[str, Any]) -> tuple[Image.Image, dict[str, Any]]:
+def render_icon(item_id: str, candidate: dict[str, Any]) -> tuple[Image.Image, dict[str, Any]]:  # noqa: C901
     """Render one item's GUI icon with candidate override fields applied.
 
     Mirrors normalize_item_icons.main's fit pipeline exactly, then applies the
@@ -206,9 +217,11 @@ def render_icon(item_id: str, candidate: dict[str, Any]) -> tuple[Image.Image, d
     proxy["parent"] = _source
 
     measured = visible_projected_measurements(proxy, resolver, pixels_per_unit=16)
-    image = render_projected_icon(proxy, resolver, size=ICON_SIZE)
+    image = render_projected_icon(proxy, resolver, size=ICON_SIZE,
+                                  face_shade=shade_profile(str(candidate.get("shade") or "game")))
     report = {"item": item_id, "target_px": target_px, "floor_anchor": floor_anchor,
               "yaw": scale_factor, "offset_x": ox, "offset_y": oy,
+              "shade": str(candidate.get("shade") or "game"),
               "source_override": source_override, "effective": params,
               "bounds": [round(v, 3) for v in measured["bounds"]] if measured else None}
     return image, report
@@ -296,10 +309,16 @@ class Handler(BaseHTTPRequestHandler):
         overrides = payload.get("items")
         if not isinstance(overrides, dict):
             self._json({"error": "expected {items: {...}}"}, 400); return
+        previous = load_overrides(ROOT)
         path = save_overrides(ROOT, overrides)
-        # Regenerate every tuned item's proxy so the grid thumbnails (which read
-        # the proxy on disk) match the candidate preview immediately.
-        regenerated = [i for i in overrides if regenerate_item(i)]
+        # Only geometry overrides need a proxy rebuild: "shade" is a preview-time
+        # lighting profile and never lands in the model. Regenerating on a shade
+        # toggle would rewrite an unchanged proxy and slow the whole grid.
+        geometry_fields = set(FIELDS) - {"shade", "note"}
+        stale = [i for i, fields in overrides.items()
+                 if {k: v for k, v in fields.items() if k in geometry_fields}
+                 != {k: v for k, v in previous.get(i, {}).items() if k in geometry_fields}]
+        regenerated = [i for i in stale if regenerate_item(i)]
         self._json({"saved": str(path), "count": len(load_overrides(ROOT)),
                     "regenerated": regenerated})
 

@@ -57,10 +57,12 @@ function command(text) { return call('run_command', { command: text }); }
 // previous round's contents. It answered exactly that way once already: /setblock
 // refuses to replace a chest that still holds items ("can't place block"), so a
 // reused chest kept the old stacks and the shot silently showed them.
+// Vanilla ids are kept qualified ("minecraft:stone") so the enumerated contents can be
+// matched against the requested batch without guessing a namespace.
 function containerContents(response) {
   const text = typeof response === 'string' ? response : JSON.stringify(response);
   const ids = [];
-  for (const match of text.matchAll(/pastoral_home:([a-z0-9_]+)/g)) ids.push(match[1]);
+  for (const match of text.matchAll(/(?:pastoral_home|minecraft):([a-z0-9_]+)/g)) ids.push(match[1]);
   return ids;
 }
 
@@ -95,6 +97,9 @@ const opts = argsOf(process.argv.slice(2));
 let ids = itemsWithProxy(catalogIds(opts.all));
 const requested = opts.items ? opts.items.split(',').map((value) => value.trim()).filter(Boolean) : [];
 if (requested.length) ids = requested;
+// Probe captures may name vanilla items ("minecraft:stone") to compare against the
+// engine's own rendering; they never own a pastoral_home proxy.
+const qualified = (id) => (id.includes(':') ? id : `pastoral_home:${id}`);
 if (opts.limit > 0) ids = ids.slice(0, opts.limit);
 if (ids.length === 0) throw new Error('no registered items with a GUI proxy found');
 console.log('[icon_sheet] ' + ids.length + ' items');
@@ -180,7 +185,7 @@ function clearChest() {
 
 function fillChest(batch) {
   batch.forEach((id, slot) => {
-    command(`item replace block ${chest.x} ${chest.y} ${chest.z} container.${slot} with pastoral_home:${id} 1`);
+    command(`item replace block ${chest.x} ${chest.y} ${chest.z} container.${slot} with ${qualified(id)} 1`);
   });
 }
 
