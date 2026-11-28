@@ -569,7 +569,10 @@ def _render_projected_depth_buffer(quads, size: int, face_shade: dict[str, float
             depth_map[inside] = (w0[inside] * depths[0] + w1[inside] * depths[1]
                                  + w2[inside] * depths[2])
             compare_depth = -depth_map if keep_max else depth_map
-            closer = inside & (compare_depth < region_depth)
+            # 深度比较用 <=：原版 cutout/translucent 的深度测试是 GL_LEQUAL，
+            # 深度相同的后画者胜。薄壁模型（玻璃杯壁、帐篷布面）大量出现等深重合，
+            # 用 < 会让先画的面永远占优，与游戏挑中的面不同，整片面偏色。
+            closer = inside & (compare_depth <= region_depth)
 
             if sprite is None:
                 flat = tuple(int(160 * shade) for _ in range(3))
