@@ -39,7 +39,9 @@ from normalize_item_icons import (collect_model_sources, resolve_model,
                                    load_model_with_parent, resolve_texture,
                                    collect_model_ids, source_model_id)
 
-ROOT = Path.cwd().resolve()
+# 项目根取 tools/deploy 的上两级，而不是 cwd：从计划任务/其它目录启动时 cwd 是
+# System32，按 cwd 解析会把 assets 指到不存在的地方，服务起来但每个接口都 500。
+ROOT = Path(__file__).resolve().parents[2]
 CONFIG = resolve({"root": str(ROOT)})
 MOD_ID = CONFIG.get("mod_id", "pastoral_home")
 ASSETS = ROOT / "src/main/resources/assets" / MOD_ID
