@@ -44,6 +44,13 @@ main{padding:18px 22px;overflow-y:auto;display:grid;grid-template-columns:minmax
 #refStack img{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated}
 #refImg{opacity:.5}
 .metrics{font-family:ui-monospace,monospace;font-size:11px;color:var(--accent);background:var(--bg);border-radius:5px;padding:10px 12px;margin-top:14px;white-space:pre-wrap;line-height:1.6}
+.ctxbar{margin-top:18px}
+.ctxcap{font-size:11px;color:var(--muted);margin-bottom:20px}
+.ctxrow{display:flex;gap:6px;flex-wrap:nowrap;align-items:flex-start}
+.ctxcell{position:relative;width:64px;height:64px;background:#8b8b8b;border:1px solid #373737;flex:0 0 auto}
+.ctxcell img{display:block;width:64px;height:64px;image-rendering:pixelated}
+.ctxcell.cur{outline:2px solid var(--accent);outline-offset:1px}
+.ctxcell em{position:absolute;left:0;top:64px;width:64px;font-size:9px;font-style:normal;color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .ctl label{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin:14px 0 5px}
 .ctl label b{color:var(--text);font-variant-numeric:tabular-nums;font-weight:500}
 .ctl input[type=range]{width:100%;accent-color:var(--accent)}
@@ -75,6 +82,10 @@ main{padding:18px 22px;overflow-y:auto;display:grid;grid-template-columns:minmax
 <div class="tile"><div class="frame"><img id="big" width="180" height="180"></div><div class="cap">放大预览 · 11×</div></div>
 <div class="tile"><div class="frame" style="width:96px;height:96px"><img id="native" width="64" height="64"></div><div class="cap">游戏原尺寸 · 4×</div></div>
 </div>
+<div class="ctxbar">
+<div class="ctxcap">相邻对比 · 原尺寸 4×（左三 + 当前 + 右三，当前项跟着微调实时更新）</div>
+<div class="ctxrow" id="ctxrow"></div>
+</div>
 <details class="refbar"><summary>▸ 游戏截图对照（叠加找差异）</summary>
 <div class="refbody">
 <input type="file" id="refFile" accept="image/png" onchange="loadRef(event)" style="font-size:11px;color:var(--muted)">
@@ -96,6 +107,8 @@ main{padding:18px 22px;overflow-y:auto;display:grid;grid-template-columns:minmax
 <input type="range" id="yaw" min="-180" max="180" step="1">
 <label>对齐方式</label>
 <select id="anchor"><option value="auto">自动（按投影高度）</option><option value="center">居中</option><option value="floor">贴底</option></select>
+<label>面明暗 <span style="font-size:10px">game = 与游戏一致</span></label>
+<select id="shade"><option value="game">游戏阴影（默认）</option><option value="flat">关闭阴影</option></select>
 <label>替换源模型</label>
 <select id="source"><option value="">（保持默认）</option></select>
 <label>备注 <span style="font-size:10px">struct: 开头 = 结构问题需改脚本</span></label>
@@ -108,44 +121,81 @@ main{padding:18px 22px;overflow-y:auto;display:grid;grid-template-columns:minmax
 </main></div>
 <div id="toast"></div>
 <script>
-let items=[],overrides={},selected=null,sources=[];
+let items=[],overrides={},selected=null,sources=[],ver={};
+// 缩略图 URL 带版本号：保存后该物品的 proxy 变了，但浏览器会按 URL 缓存图片，
+// 不带版本号时左侧格子会继续显示旧图（服务端已发 no-store，仍保险起见）。
+function thumbUrl(id,v){return '/api/thumb?item='+encodeURIComponent(id)+'&v='+(v!==undefined?v:(ver[id]||0))}
+function visibleItems(){const q=$('filter').value.toLowerCase().trim();return items.filter(i=>i.id.toLowerCase().includes(q))}
 const $=x=>document.getElementById(x);
 function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),1800)}
 function buildGrid(){
-const q=$('filter').value.toLowerCase().trim();const g=$('grid');g.innerHTML='';
-items.filter(i=>i.id.toLowerCase().includes(q)).forEach(i=>{
-const c=document.createElement('div');c.className='cell'+(i.id===selected?' sel':'');
-c.innerHTML='<img src="/api/thumb?item='+encodeURIComponent(i.id)+'"><div class="tag">'+i.id+'</div>'+(overrides[i.id]?'<div class="dot"></div>':'');
+const g=$('grid');g.innerHTML='';
+visibleItems().forEach(i=>{
+const c=document.createElement('div');c.className='cell'+(i.id===selected?' sel':'');c.dataset.id=i.id;
+c.innerHTML='<img src="'+thumbUrl(i.id)+'"><div class="tag">'+i.id+'</div>'+(overrides[i.id]?'<div class="dot"></div>':'');
 c.onclick=()=>select(i.id);c.title=i.id;g.appendChild(c)})}
+function patchCell(id){
+const c=document.querySelector('.cell[data-id="'+CSS.escape(id)+'"]');if(!c)return;
+const img=c.querySelector('img');if(img)img.src=thumbUrl(id);
+if(!c.querySelector('.dot')&&overrides[id]){const d=document.createElement('div');d.className='dot';c.appendChild(d)}
+if(c.querySelector('.dot')&&!overrides[id]){const d=c.querySelector('.dot');d.remove()}}
+// 相邻对比：把当前项放回它在网格里的 neighbourhood，用同一套原尺寸槽位渲染，
+// 这样微调时能直接判断它和一排邻居放一起是否协调。
+function renderCtx(curUrl){
+const row=$('ctxrow');if(!row)return;row.innerHTML='';
+const list=visibleItems();const idx=list.findIndex(i=>i.id===selected);if(idx<0)return;
+// 固定 7 格、当前项永远在第 4 格：左右各取 min(3, 余量) 个邻居，缺的位置补空位，
+// 这样靠边时布局不跳，也永远不会因为补位而挤到第二行。
+const lead=Math.min(3,idx);
+const trail=Math.min(3,list.length-1-idx);
+const cells=[];
+for(let k=0;k<3-lead;k++)cells.push(null);
+cells.push(...list.slice(idx-lead,idx+trail+1));
+for(let k=0;k<3-trail;k++)cells.push(null);
+cells.forEach(i=>{
+if(i===null){const ph=document.createElement('div');ph.className='ctxcell';ph.style.visibility='hidden';row.appendChild(ph);return}
+const c=document.createElement('div');c.className='ctxcell'+(i.id===selected?' cur':'');
+const img=document.createElement('img');
+img.src=(i.id===selected&&curUrl)?curUrl:thumbUrl(i.id);
+const t=document.createElement('em');t.textContent=i.id;
+c.appendChild(img);c.appendChild(t);row.appendChild(c)})}
 async function refresh(){await loadOverrides();const d=await(await fetch('/api/items')).json();items=d.items;$('stat').textContent=items.length+' 个物品 · '+Object.keys(overrides).length+' 项已调';buildGrid()}
 async function loadOverrides(){const d=await(await fetch('/api/overrides')).json();overrides=d.items||{}}
 async function loadSources(){const d=await(await fetch('/api/source-options')).json();sources=d.options||[];const s=$('source');sources.forEach(o=>{const p=document.createElement('option');p.value=o;p.textContent=o.split('/').pop();s.appendChild(p)})}
-function candidate(){return{target_px:+$('target').value,offset_x:+$('ox').value,offset_y:+$('oy').value,yaw:+$('yaw').value,anchor:$('anchor').value,source:$('source').value,note:$('note').value}}
-function fill(p){$('target').value=p.target_px??15.7;$('ox').value=p.offset_x??0;$('oy').value=p.offset_y??0;$('yaw').value=p.yaw??0;$('anchor').value=p.anchor??'auto';$('source').value=p.source??'';$('note').value=p.note??'';sync()}
+function candidate(){return{target_px:+$('target').value,offset_x:+$('ox').value,offset_y:+$('oy').value,yaw:+$('yaw').value,anchor:$('anchor').value,source:$('source').value,shade:$('shade').value,note:$('note').value}}
+function fill(p){$('target').value=p.target_px??15.7;$('ox').value=p.offset_x??0;$('oy').value=p.offset_y??0;$('yaw').value=p.yaw??0;$('anchor').value=p.anchor??'auto';$('source').value=p.source??'';$('shade').value=p.shade??'game';$('note').value=p.note??'';sync()}
 function sync(){$('vT').textContent=(+$('target').value).toFixed(1);$('vX').textContent=(+$('ox').value).toFixed(2);$('vY').textContent=(+$('oy').value).toFixed(2);$('vR').textContent=(+$('yaw').value).toFixed(0)}
 let deb;function sched(){clearTimeout(deb);deb=setTimeout(preview,100)}
 async function preview(){if(!selected)return;const c=candidate();const r=await fetch('/api/preview?item='+encodeURIComponent(selected)+'&candidate='+encodeURIComponent(JSON.stringify(c)));const d=await r.json();
 if(d.error){$('metrics').textContent='ERROR: '+d.error;return}
-const url='data:image/png;base64,'+d.png;$('big').src=url;$('native').src=url;$('refBase').src=url;
-const p=d.report;$('metrics').textContent='target  '+p.target_px+' px      anchor  '+(p.floor_anchor?'floor':'center')+'   |   bounds '+JSON.stringify(p.bounds)+'   |   offset ('+p.offset_x+','+p.offset_y+')  yaw '+p.yaw}
+const url='data:image/png;base64,'+d.png;$('big').src=url;$('native').src=url;$('refBase').src=url;renderCtx(url);
+const p=d.report;$('metrics').textContent='target  '+p.target_px+' px      anchor  '+(p.floor_anchor?'floor':'center')+'   shade  '+p.shade+'   |   bounds '+JSON.stringify(p.bounds)+'   |   offset ('+p.offset_x+','+p.offset_y+')  yaw '+p.yaw}
 async function select(id){
 selected=id;const o=overrides[id]||{};
-fill({target_px:o.target_px??15.7,offset_x:o.offset_x??0,offset_y:o.offset_y??0,yaw:o.yaw??0,anchor:o.anchor??'auto',source:o.source??'',note:o.note??''});
+fill({target_px:o.target_px??15.7,offset_x:o.offset_x??0,offset_y:o.offset_y??0,yaw:o.yaw??0,anchor:o.anchor??'auto',source:o.source??'',shade:o.shade??'game',note:o.note??''});
 const on=!!overrides[id];$('badge').textContent=on?'已调':'默认';$('badge').className='badge'+(on?' on':'');
-buildGrid();await preview()}
+buildGrid();renderCtx();await preview()}
 ['target','ox','oy','yaw'].forEach(k=>$(k).addEventListener('input',()=>{sync();sched()}));
-['anchor','source'].forEach(k=>$(k).addEventListener('change',sched));
+['anchor','source','shade'].forEach(k=>$(k).addEventListener('change',sched));
 async function save(){
 if(!selected)return;overrides[selected]=candidate();
 const r=await fetch('/api/overrides',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:overrides})});const d=await r.json();
 if(d.error){toast('ERR '+d.error);return}
-toast('已保存并同步 '+selected);await refresh();await select(selected)}
+ver[selected]=(ver[selected]||0)+1;
+// 只重画这一格，不重建整个网格：重建会丢滚动位置，也会让整屏图片重新加载。
+patchCell(selected);
+$('badge').textContent='已调';$('badge').className='badge on';
+$('stat').textContent=items.length+' 个物品 · '+Object.keys(overrides).length+' 项已调';
+toast('已保存并同步 '+selected+(d.regenerated&&d.regenerated.length?'（proxy 已重建）':'（仅明暗档，无需重建）'));
+renderCtx($('big').src)}
 async function saveAll(){if(Object.keys(overrides).length){await save();toast('全部已同步到 proxy，可运行生成器落盘')}else toast('暂无 override')}
 async function reset(){if(!selected)return;delete overrides[selected];
 await fetch('/api/overrides',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:overrides})});
-toast('已重置 '+selected);await refresh();await select(selected)}
+ver[selected]=(ver[selected]||0)+1;patchCell(selected);$('badge').textContent='默认';$('badge').className='badge';
+$('stat').textContent=items.length+' 个物品 · '+Object.keys(overrides).length+' 项已调';
+toast('已重置 '+selected);await select(selected)}
 function loadRef(ev){const f=ev.target.files[0];if(!f)return;const rd=new FileReader();rd.onload=()=>{$('refImg').src=rd.result;$('refStack').style.display='block'};rd.readAsDataURL(f)}
-$('filter').addEventListener('input',buildGrid);
+$('filter').addEventListener('input',()=>{buildGrid();renderCtx()});
 // Sidebar width + column count are persisted in localStorage.
 let sidebarW=+(localStorage.getItem('it_sidebar')||340), cols=+(localStorage.getItem('it_cols')||2);
 function applyLayout(){document.documentElement.style.setProperty('--sidebar',sidebarW+'px');document.documentElement.style.setProperty('--cols',cols);$('colLabel').textContent=cols}

@@ -31,8 +31,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import resolve
 from item_icon_proxy import VANILLA_BLOCK_GUI, collect_model_ids
+from icon_overrides import effective_params, load_overrides
 from item_icon_preview import (project_gui_translation, render_projected_icon,
-                               visible_projected_measurements)
+                               shade_profile, visible_projected_measurements)
 from item_ids import official_items
 from normalize_item_icons import load_model_with_parent, resolve_model, resolve_texture
 
@@ -75,6 +76,10 @@ def main() -> int:
                              f"exactly one vanilla slot ({SLOT_FRAME_CANVAS}px = {SLOT_FRAME_PIXELS}px x {ICON_ZOOM}, "
                              f"icon drawn in the centred {ICON_CANVAS}px area)")
     parser.add_argument("--items", default="", help="comma-separated item ids; default is all")
+    parser.add_argument("--shade", choices=("game", "flat"), default="game",
+                        help="face shading: 'game' matches the in-game capture, 'flat' disables it")
+    parser.add_argument("--ignore-overrides", action="store_true",
+                        help="ignore per-item shade/geometry overrides while previewing")
     parser.add_argument("--vanilla-reference", action="store_true",
                         help="prepend a full-cube baseline rendered with the same vanilla GUI transform")
     parser.add_argument("--all-proxies", action="store_true",
@@ -96,6 +101,9 @@ def main() -> int:
     include_all = bool(requested) or args.all_proxies
     omitted_components = 0
     entries = []
+    # 每个物品可以单独切明暗档（item_icon_overrides.json 的 shade 字段）；
+    # 没有覆盖时用命令行给的档，默认 game。
+    overrides = {} if args.ignore_overrides else load_overrides(root)
 
     for item_path in sorted(items_dir.glob("*.json")):
         if requested and item_path.stem not in requested:
@@ -103,6 +111,7 @@ def main() -> int:
         if not include_all and item_path.stem not in registered:
             omitted_components += 1
             continue
+        item_shade = overrides.get(item_path.stem, {}).get("shade", args.shade)
         definition = json.loads(item_path.read_text(encoding="utf-8"))
         model_root = definition.get("model", {})
         cases = model_root.get("cases", []) if model_root.get("type") == "minecraft:select" else []
@@ -132,9 +141,11 @@ def main() -> int:
                       bounds[1] * gui_scale[1] + screen_translation[1],
                       bounds[2] * gui_scale[0] + screen_translation[0],
                       bounds[3] * gui_scale[1] + screen_translation[1])
+            face_shade = shade_profile(item_shade)
             rendered = render_projected_icon(model, lambda ref: resolve_texture(root, ref),
                                              gui_scale, gui_rotation, size=ICON_CANVAS,
-                                             projection_offset=screen_translation)
+                                             projection_offset=screen_translation,
+                                             face_shade=face_shade)
             icon_layers.append(rendered)
             projected.append(bounds)
 

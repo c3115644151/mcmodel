@@ -79,7 +79,17 @@ FACINGS = ("north", "east", "south", "west")
 # Redstone turns the lamps into a display: the controller writes MODE=REMOTE on every lamp it
 # reaches, so a variant exists for it like any other mode (6 mounts x 5 modes x 2 lit x 4 facings).
 MODES = ("off", "chase", "steady", "beacon", "remote")
-LIT_STATES = ("false", "true")
+LEVELS = tuple(range(0, 13))
+# 亮度档不是贴图档: 同一张贴图, 由模型元素的 light_emission 决定它是否被世界光照压暗。
+# 0 = 完全不发光(夜里随环境变暗), 1 = 只发亮不照地, 4/9/15 逐级变亮。四个档位对应 0..12 三段区间。
+TIERS = (
+    # (name, light_emission, 覆盖的 LEVEL 区间)
+    ("dark", 0, (0,)),
+    ("faint", 4, (1, 2, 3)),
+    ("mid", 9, (4, 5, 6, 7, 8)),
+    ("full", 15, (9, 10, 11, 12)),
+)
+TIER_OF_LEVEL = {level: name for name, _, levels in TIERS for level in levels}
 
 # The hanger points +Y in the model. Minecraft's "x"/"y" keys are Quadrant values, and Quadrant is
 # named from -X: "x": 90 is BLOCK_ROT_X_90, which OctahedralGroup.java:67 defines as ROT_90_X_NEG, a
@@ -258,10 +268,12 @@ def write_textures(data: dict) -> None:
 
 
 def write_model(path: Path, elements: list[dict], state: str,
-               display: dict | None = None, shell_texture: str | None = None) -> None:
+               display: dict | None = None, shell_texture: str | None = None,
+               light_emission: int | None = None) -> None:
     # Break debris is a derived tile named after the model, so the one repo-wide shaper owns it:
     # a texture merely mentioning "particle" is left alone, and the lamp's debris never gets a second
     # recipe that silently survives every later improvement (2026-11-26).
+    # state 传进来的就是调色板名(unlit/lit), 不是档位名: 四档共用两套贴图, 差别只在 light_emission。
     textures = {"particle": f"pastoral_home:block/{path.stem}_particle",
                 "lamp_shell": f"pastoral_home:block/{shell_texture or f'party_lights_shell_{state}'}",
                 "lamp_core": f"pastoral_home:block/party_lights_core_{state}"}
@@ -271,6 +283,17 @@ def write_model(path: Path, elements: list[dict], state: str,
         "textures": textures,
         "elements": elements,
     }
+    # 0 档必须把字段删除, 而不是跳过赋值: lamp_elements() 的母版元素本来就带着 15,
+    # 只"不覆盖"的话暗档照样满亮渲染。
+    if light_emission is None or light_emission <= 0:
+        for element in elements:
+            element.pop("light_emission", None)
+    if light_emission is not None:
+        # 自发光是模型属性, 不是贴图属性: 写 0 的元素跟随世界光照(夜里会暗), 写 15 的元素恒亮。
+        # 0 档必须落在"不写这个字段"上, 因为 0 与"未声明"在渲染上并不完全等价。
+        if light_emission > 0:
+            for element in model["elements"]:
+                element["light_emission"] = light_emission
     if display:
         model["display"] = json.loads(json.dumps(display))
     path.write_text(json.dumps(model, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -281,16 +304,15 @@ def write_blockstates() -> None:
     for attach in ATTACHES:
         for facing in FACINGS:
             for mode in MODES:
-                for lit in LIT_STATES:
-                    state = "lit" if lit == "true" else "unlit"
-                    variant = {"model": f"pastoral_home:block/party_lights_{state}"}
+                for level in LEVELS:
+                    variant = {"model": f"pastoral_home:block/party_lights_{TIER_OF_LEVEL[level]}"}
                     variant.update(ROTATIONS[attach])
-                    variants[f"attach={attach},facing={facing},mode={mode},lit={lit}"] = variant
+                    variants[f"attach={attach},facing={facing},mode={mode},level={level}"] = variant
     BLOCKSTATES.mkdir(parents=True, exist_ok=True)
     (BLOCKSTATES / "party_lights.json").write_text(
         json.dumps({"variants": variants}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"wrote blockstates/party_lights.json ({len(variants)} variants, "
-          f"{len(STATE_FRAMES)} models turned by x/y)")
+          f"{len(TIERS)} brightness models turned by x/y)")
 
 
 
@@ -398,9 +420,11 @@ def main() -> None:
 
     kept = set()
     elements = lamp_elements()
-    for state in STATE_FRAMES:
-        path = MODELS / f"party_lights_{state}.json"
-        write_model(path, elements, state)
+    # 四档亮度共用同一份几何与贴图, 差别只在元素的 light_emission。0 档不写这个字段,
+    # 于是它在夜里跟随环境光照变暗, 而不是像现在这样恒亮。
+    for tier, emission, _levels in TIERS:
+        path = MODELS / f"party_lights_{tier}.json"
+        write_model(path, elements, "unlit" if emission == 0 else "lit", light_emission=emission)
         kept.add(path.name)
     # Same geometry, own shell sheet: no face is dropped, the cage reads whole because it is blended.
     write_model(MODELS / "party_lights_inventory.json", elements, "lit",
@@ -415,7 +439,7 @@ def main() -> None:
     allowed = {f"party_lights_{part}_{state}.png" for state in STATE_FRAMES
                for part in ("core", "shell")}
     allowed |= {f"{stem}_particle.png" for stem in
-                ["party_lights_" + state for state in STATE_FRAMES] + ["party_lights_inventory"]}
+                ["party_lights_" + tier for tier, _e, _l in TIERS] + ["party_lights_inventory"]}
     # The lit sheets animate, so their descriptors are part of the shipped set.
     allowed |= {f"party_lights_{part}_lit.png.mcmeta" for part in ("core", "shell")}
     allowed |= {"party_lights_shell_item.png", "party_lights_shell_item.png.mcmeta"}

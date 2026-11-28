@@ -22,6 +22,23 @@ class IconOverridesTests(unittest.TestCase):
             self.assertEqual(loaded["a"], {"offset_x": 1.5, "note": "too small"})
             self.assertNotIn("b", loaded)  # all values are no-ops
 
+    def test_shade_field_roundtrip_and_validation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            save_overrides(root, {"a": {"shade": "flat"}, "b": {"shade": "game"}})
+            loaded = load_overrides(root)
+            self.assertEqual(loaded["a"]["shade"], "flat")
+            self.assertEqual(loaded["b"]["shade"], "game")
+            (root / "item_icon_overrides.json").write_text(
+                json.dumps({"version": 1, "items": {"a": {"shade": "dark"}}}), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_overrides(root)
+
+    def test_effective_params_shade_default(self):
+        auto = {"target_px": 15.7, "floor_anchor": False}
+        self.assertEqual(effective_params("a", auto, {})["shade"], "game")
+        self.assertEqual(effective_params("a", auto, {"a": {"shade": "flat"}})["shade"], "flat")
+
     def test_effective_params_merge(self):
         auto = {"target_px": 15.7, "floor_anchor": True}
         out = effective_params("x", auto, {"x": {"target_px": 12.0, "anchor": "center", "yaw": 15}})

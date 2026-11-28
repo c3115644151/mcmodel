@@ -64,7 +64,8 @@ def natural_window(tile: Image.Image, frame: Image.Image) -> bool:
     return False
 
 
-for name in ("party_lights_lit.json", "party_lights_unlit.json", "hanging_rope_segment.json"):
+for name in ("party_lights_dark.json", "party_lights_faint.json", "party_lights_mid.json",
+        "party_lights_full.json", "hanging_rope_segment.json"):
     data = json.loads((MODEL_ROOT / name).read_text(encoding="utf-8"))
     textures = data["textures"]
     tile_name = textures["particle"].rsplit("/", 1)[-1]
