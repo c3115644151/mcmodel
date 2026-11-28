@@ -64,12 +64,15 @@ def check_item(item_path: Path, entry: dict, assets: Path, mod_id: str, root: Pa
             issues.append(f"{model_id}: invalid JSON: {error}")
             continue
         gui = proxy.get("display", {}).get("gui", {})
-        # Vanilla's own block GUI camera. Any other yaw shows the model's back
-        # face; any nonzero translation pushes the icon out of its slot.
-        if gui.get("rotation") != VANILLA_BLOCK_GUI["rotation"]:
+        # 相机由 manifest 记录：默认是原版 [30,225,0]，加过"额外朝向"的物品是
+        # [30,225+yaw,0]——那是 display 旋转，不是几何旋转，proxy 里的几何仍是轴对齐 box。
+        expected_rotation = list(entry.get("gui", {}).get("rotation",
+                                                          VANILLA_BLOCK_GUI["rotation"]))
+        actual_rotation = [round(float(value), 6) for value in gui.get("rotation") or []]
+        if [round(float(value), 6) for value in expected_rotation] != actual_rotation:
             issues.append(
-                f"{model_id}: GUI rotation {gui.get('rotation')} must be "
-                f"{VANILLA_BLOCK_GUI['rotation']} (minecraft:block/block)")
+                f"{model_id}: GUI rotation {gui.get('rotation')} must match the manifest "
+                f"{expected_rotation}")
         if any(abs(float(value)) > 1e-6 for value in gui.get("translation") or [0, 0, 0]):
             issues.append(
                 f"{model_id}: GUI translation {gui.get('translation')} must be zero; "

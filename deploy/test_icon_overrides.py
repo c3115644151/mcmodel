@@ -1,12 +1,14 @@
+import copy
 import json
 import math
 import tempfile
 import unittest
 from pathlib import Path
 
-from item_icon_proxy import GUI_ICON_TARGET_PX, VANILLA_BLOCK_GUI, geometry_bounds
+from item_icon_proxy import (GUI_ICON_TARGET_PX, VANILLA_BLOCK_GUI, fit_gui_projection,
+                             geometry_bounds, screen_jacobian)
 from icon_overrides import (
-    apply_screen_offset, apply_yaw_rotation, effective_params,
+    apply_screen_offset, effective_params, yaw_gui_rotation,
     load_overrides, save_overrides, screen_offset_to_geometry,
 )
 
@@ -38,6 +40,33 @@ class IconOverridesTests(unittest.TestCase):
         auto = {"target_px": 15.7, "floor_anchor": False}
         self.assertEqual(effective_params("a", auto, {})["shade"], "game")
         self.assertEqual(effective_params("a", auto, {"a": {"shade": "flat"}})["shade"], "flat")
+        self.assertEqual(effective_params("a", auto, {})["shade_strength"], 1.0)
+
+    def test_shade_strength_is_first_class_and_legacy_shade_still_reads(self):
+        auto = {"target_px": 15.7, "floor_anchor": False}
+        # 连续强度是当前写法；旧档位映射成 0/1，显式强度优先。
+        self.assertEqual(effective_params("a", auto, {"a": {"shade_strength": 0.45}})["shade_strength"], 0.45)
+        self.assertEqual(effective_params("a", auto, {"a": {"shade": "flat"}})["shade_strength"], 0.0)
+        self.assertEqual(effective_params("a", auto, {"a": {"shade": "flat",
+                                                             "shade_strength": 0.6}})["shade_strength"], 0.6)
+        self.assertEqual(effective_params("a", auto, {"a": {"shade_strength": 0.0}})["shade"], "flat")
+
+    def test_shade_strength_range_and_noop_pruning(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # 0 是有效值（等于关阴影），不能被当成"没改"丢掉；默认 1.0 与旧档 game 要丢。
+            save_overrides(root, {"a": {"shade_strength": 0.0},
+                                  "b": {"shade_strength": 1.0, "target_px": 9},
+                                  "c": {"shade": "game"}})
+            loaded = load_overrides(root)
+            self.assertEqual(loaded["a"], {"shade_strength": 0.0})
+            self.assertEqual(loaded["b"], {"target_px": 9})
+            # 旧档位原样留存（不做迁移改写），新版界面不再写它。
+            self.assertEqual(loaded["c"], {"shade": "game"})
+            (root / "item_icon_overrides.json").write_text(
+                json.dumps({"version": 1, "items": {"x": {"shade_strength": 2.0}}}), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_overrides(root)
 
     def test_effective_params_merge(self):
         auto = {"target_px": 15.7, "floor_anchor": True}
@@ -52,16 +81,18 @@ class IconOverridesTests(unittest.TestCase):
         self.assertFalse(plain["overridden"])
 
     def test_screen_offset_inverse_projection(self):
-        # A geometry translation must land on the requested screen offset after
-        # the vanilla GUI camera projects it. The yaw-225 camera puts screen x at
-        # -(x+z)*cos45, so dx=dz yields sx=-2*cos45*dx; sy=-cos30*dy.
+        # 平移必须精确落在请求的屏幕偏移上。这里用相机自身的雅可比验算，而不是
+        # 手推的 sx=-(x+z)cos45：那个公式在 yaw 225 只是特例，而且忽略了俯仰把
+        # x/z 也混进屏幕 y 的耦合（换 yaw 后旧公式就不成立）。
         scale = VANILLA_BLOCK_GUI["scale"][0]
+        rotation = tuple(VANILLA_BLOCK_GUI["rotation"])
+        jacobian = screen_jacobian(rotation)
         for ox, oy in [(2.0, 0.0), (0.0, 3.0), (-1.5, 2.5)]:
-            dx, dy, dz = screen_offset_to_geometry(ox, oy, scale)
-            sx = -math.cos(math.radians(45)) * (dx + dz) * scale
-            sy = -(math.cos(math.radians(30)) * dy) * scale
-            self.assertAlmostEqual(sx, ox, places=5)
-            self.assertAlmostEqual(sy, oy, places=5)
+            translation = screen_offset_to_geometry(ox, oy, scale, rotation)
+            screen = [sum(jacobian[axis][i] * translation[axis] for axis in range(3))
+                      for i in (0, 1)]
+            self.assertAlmostEqual(screen[0] * scale, ox, places=5)
+            self.assertAlmostEqual(screen[1] * scale, oy, places=5)
 
     def test_apply_screen_offset_moves_visible_silhouette(self):
         # A cube is symmetric so its visible silhouette tracks the geometry exactly.
@@ -88,18 +119,42 @@ class IconOverridesTests(unittest.TestCase):
         self.assertAlmostEqual(((after["bounds"][1] + after["bounds"][3]) -
                                 (before["bounds"][1] + before["bounds"][3])) / 2 * scale, 1.5, delta=0.15)
 
-    def test_apply_yaw_rotates_geometry_without_mutating_source(self):
-        # An axis-aligned cube rotated 15 deg must have a different corner, and a
-        # larger AABB (rotated cubes do not keep their axis-aligned size). The
-        # important contract is that the source model is not mutated.
-        model = {"elements": [{"from": [0, 0, 0], "to": [16, 16, 16]}]}
-        rotated = apply_yaw_rotation(model, 15.0)
-        a, b = geometry_bounds(model), geometry_bounds(rotated)
-        self.assertIsNotNone(b)
-        self.assertNotEqual(a, b)
-        self.assertGreater(b[3] - b[0], a[3] - a[0])
-        self.assertEqual(model["elements"][0]["from"], [0, 0, 0])  # no mutation
-        self.assertEqual(apply_yaw_rotation(model, 0.0)["elements"][0]["from"], [0, 0, 0])
+    def test_yaw_is_a_camera_rotation_not_a_geometry_rotation(self):
+        # 额外朝向只改 display.gui.rotation。几何一旦被旋转，轴对齐 box 就不再是它自己：
+        # 转角点会让 model 被压扁/翻倒/解体——这是 2026-11-28 报上来的现象。
+        self.assertEqual(yaw_gui_rotation(0.0, VANILLA_BLOCK_GUI["rotation"]), [30.0, 225.0, 0.0])
+        self.assertEqual(yaw_gui_rotation(45.0, VANILLA_BLOCK_GUI["rotation"]), [30.0, 270.0, 0.0])
+        self.assertEqual(yaw_gui_rotation(-45.0, VANILLA_BLOCK_GUI["rotation"]), [30.0, 180.0, 0.0])
+        self.assertEqual(yaw_gui_rotation(200.0, VANILLA_BLOCK_GUI["rotation"]), [30.0, 65.0, 0.0])
+        model = {
+            "textures": {"t": "pastoral_home:block/cube"},
+            "elements": [{"from": [13, 2, 13], "to": [16, 14, 16],
+                          "faces": {name: {"uv": [0, 0, 16, 16], "texture": "#t"}
+                                    for name in ("north", "south", "east", "west", "up", "down")}}],
+        }
+        original = [copy.deepcopy(element) for element in model["elements"]]
+        radius = tuple(VANILLA_BLOCK_GUI["rotation"])
+        for yaw in (15.0, 45.0, 130.0):
+            fitted = fit_gui_projection(model, lambda _ref: None, target_px=12.0,
+                                        gui_rotation=yaw_gui_rotation(yaw, radius))
+            self.assertIsNotNone(fitted)
+            rotation = fitted["model"]["display"]["gui"]["rotation"]
+            self.assertEqual(rotation, yaw_gui_rotation(yaw, radius))
+            element = fitted["model"]["elements"][0]
+            # 轴对齐仍然成立：from<=to 没被打乱；fit 只等比缩放，长宽比必须保持 3:12:3。
+            extents = [element["to"][axis] - element["from"][axis] for axis in range(3)]
+            for axis in range(3):
+                self.assertLessEqual(element["from"][axis], element["to"][axis],
+                                     f"yaw {yaw} 把 box 转坏了: {element}")
+            self.assertAlmostEqual(extents[0], extents[2], places=6)
+            self.assertAlmostEqual(extents[1] / extents[0], 4.0, places=6)
+            self.assertEqual([copy.deepcopy(e) for e in model["elements"]], original)
+            # 换相机后仍居中，且长边落在目标尺寸上。
+            bounds = fitted["fit_projected_bounds"]
+            scale = VANILLA_BLOCK_GUI["scale"][0]
+            self.assertLess(abs((bounds[0] + bounds[2]) * 0.5 * scale), 0.25)
+            self.assertLess(abs((bounds[1] + bounds[3]) * 0.5 * scale), 0.25)
+            self.assertAlmostEqual(max(fitted["fit_projected_size"]), 12.0, delta=0.6)
 
 
 if __name__ == "__main__":

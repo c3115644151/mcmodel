@@ -28,7 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import resolve
-from icon_overrides import (apply_screen_offset, apply_yaw_rotation, effective_params,
+from icon_overrides import (apply_screen_offset, effective_params, yaw_gui_rotation,
                              load_overrides)
 from item_icon_proxy import (
     GUI_ICON_TARGET_PX,
@@ -219,6 +219,45 @@ def collect_model_sources(model_ids, assets_root: Path, mod_id: str) -> list:
     return sources
 
 
+def resolve_gui_sources(model_tree: dict, assets_root: Path, mod_id: str,
+                        source_override: str | None = None) -> tuple[list, str, list[str]]:
+    """Sources the GUI icon is built from: (sources, status, model_ids used).
+
+    One resolution order for both the generator and the tuner preview, so the
+    preview cannot drift from the shipped proxy:
+
+    1. the models the GUI case actually references;
+    2. the item's fallback model, because a GUI case can point at this item's own
+       proxy and unwrapping that proxy lands on a geometry-less template such as
+       minecraft:block/block (arch is one);
+    3. an explicit source override;
+    4. bake_root_sources applies the model's root transform, which the icon must
+       show (three items were mismatching because this step was skipped).
+
+    status is "ok" or the reason there is nothing to bake.
+    """
+    model = model_tree if isinstance(model_tree, dict) else {}
+    if model.get("type") == "minecraft:select" and model.get("property") == "minecraft:display_context":
+        gui_tree = next((case.get("model", {}) for case in model.get("cases", [])
+                         if case.get("when") in ("gui", ["gui"])), {})
+    else:
+        gui_tree = model
+    model_ids = collect_model_ids(gui_tree)
+    sources = bake_root_sources(collect_model_sources(model_ids, assets_root, mod_id))
+    if not sources:
+        model_ids = list(dict.fromkeys(
+            model_ids + collect_model_ids(model.get("fallback", {}))))
+        sources = bake_root_sources(collect_model_sources(model_ids, assets_root, mod_id))
+    if not sources:
+        return [], "skipped_no_local_geometry", model_ids
+    if source_override:
+        model_ids = [source_override]
+        sources = bake_root_sources(collect_model_sources(model_ids, assets_root, mod_id))
+        if not sources:
+            return [], "skipped_source_override", model_ids
+    return sources, "ok", model_ids
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=None, help="mod project root (default: detected project)")
@@ -273,29 +312,15 @@ def main() -> int:
                 report.append({"item": item_id, "status": "skipped_hand_authored_gui", "models": [hand_authored]})
                 dropped_items.add(item_id)
                 continue
-        # Only models the GUI branch actually shows get a proxy; collecting ids from
-        # the fallback as well produced proxies nobody references (a rug whose
-        # fallback model is a child of its GUI model left a dead variant behind).
-        model_ids = collect_model_ids(gui_tree)
-        model_sources = bake_root_sources(collect_model_sources(model_ids, assets_root, mod_id))
-        if not model_sources:
-            # A GUI case that only wraps a transform carrier has nothing to normalize;
-            # borrow the held/world model so the slot is not left empty.
-            model_ids = list(dict.fromkeys(
-                model_ids + collect_model_ids(original_tree.get("fallback", {}))))
-            model_sources = bake_root_sources(collect_model_sources(model_ids, assets_root, mod_id))
-        if not model_sources:
-            report.append({"item": item_id, "status": "skipped_no_local_geometry", "models": model_ids})
-            continue
-        # A source override swaps the GUI model outright (e.g. an art-directed
-        # variant). It is resolved like any other model id and must carry geometry.
+        # Resolution order lives in resolve_gui_sources so the tuner preview walks the
+        # exact same path (it used to raise "no GUI source geometry" on arch, whose
+        # GUI proxy unwraps to the geometry-less minecraft:block/block template).
         source_override = overrides.get(item_id, {}).get("source")
-        if source_override:
-            model_ids = [source_override]
-            model_sources = bake_root_sources(collect_model_sources(model_ids, assets_root, mod_id))
-            if not model_sources:
-                report.append({"item": item_id, "status": "skipped_source_override", "models": model_ids})
-                continue
+        model_sources, source_status, model_ids = resolve_gui_sources(
+            original_tree, assets_root, mod_id, source_override)
+        if not model_sources:
+            report.append({"item": item_id, "status": source_status, "models": model_ids})
+            continue
 
         all_elements = [deepcopy(element) for _ref, _source, model, _path in model_sources
                         for element in model.get("elements", [])]
@@ -326,10 +351,10 @@ def main() -> int:
             if not normalized:
                 continue
             proxy = normalized["model"]
-            # Extra yaw is a geometry rotation applied before fit, so the vanilla
-            # camera stays authoritative and fit's inverse-projection maths holds.
-            if yaw_override:
-                proxy = apply_yaw_rotation(proxy, yaw_override)
+            # 额外朝向是**相机旋转**，不是几何旋转：轴对齐 box 只能靠 from/to 表达，
+            # 把角点各自绕 Y 转任意角度就不再是那个 box——模型被压扁/翻倒/解体正是这么来的。
+            # 所以把 yaw 写进 proxy 的 display.gui.rotation，几何只缩放+平移，游戏看到的就是这一视角。
+            gui_rotation = yaw_gui_rotation(yaw_override, VANILLA_BLOCK_GUI["rotation"])
             # normalize_to_block puts every source into the same 3D one-block
             # space; fit_gui_projection then corrects for what the 30-degree GUI
             # camera actually shows (flat, tall and asymmetric shapes all differ
@@ -340,7 +365,8 @@ def main() -> int:
             # 做法把可见下边缘贴到槽底。判据用渲染后的投影高度，不用源模型尺寸
             # ——遮阳伞源高18u但投影只有8.8px，正是后一种判据才抓得住。
             centred = fit_gui_projection(proxy, lambda ref: resolve_texture(root, ref),
-                                         target_px=item_target_px, floor_anchor=False)
+                                         target_px=item_target_px, floor_anchor=False,
+                                         gui_rotation=gui_rotation)
             if not centred:
                 report.append({"item": item_id, "status": "skipped_gui_fit", "models": [source_id]})
                 continue
@@ -354,7 +380,8 @@ def main() -> int:
                 floor_anchor = False
             if floor_anchor:
                 fitted = fit_gui_projection(proxy, lambda ref: resolve_texture(root, ref),
-                                            target_px=item_target_px, floor_anchor=True)
+                                            target_px=item_target_px, floor_anchor=True,
+                                            gui_rotation=gui_rotation)
                 if not fitted:
                     fitted = centred
             else:
@@ -365,7 +392,8 @@ def main() -> int:
             # generator use the same icon_overrides.apply_screen_offset helper.
             if offset_x or offset_y:
                 shifted = apply_screen_offset(proxy, lambda ref: resolve_texture(root, ref),
-                                              offset_x, offset_y, VANILLA_BLOCK_GUI["scale"][0])
+                                              offset_x, offset_y, VANILLA_BLOCK_GUI["scale"][0],
+                                              gui_rotation=gui_rotation)
                 if shifted is not None:
                     proxy = shifted
                 else:

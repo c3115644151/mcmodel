@@ -36,11 +36,17 @@ from typing import Any
 OVERRIDE_FILENAME = "item_icon_overrides.json"
 OVERRIDE_VERSION = 1
 
-FIELDS = ("source", "target_px", "anchor", "yaw", "offset_x", "offset_y", "shade", "note")
+FIELDS = ("source", "target_px", "anchor", "yaw", "offset_x", "offset_y",
+          "shade", "shade_strength", "note")
 ANCHOR_CHOICES = ("auto", "center", "floor")
-# 明暗档：game = 与游戏一致的逐面明暗（默认），flat = 不乘明暗。
-# 只影响预览/缩略图的观感，不改几何，也不进 proxy。
+# 明暗三件套：
+# - shade_strength 是当前写法，0 = 不乘明暗，1 = 真机实测（默认），上限 1.5；
+# - shade 是旧写法（game/flat），只为了读得懂老文件，写入时不再产生；
+# - 只影响预览/缩略图观感，不改几何，也不进 proxy。
 SHADE_CHOICES = ("game", "flat")
+LEGACY_SHADE_TO_STRENGTH = {"game": 1.0, "flat": 0.0}
+SHADE_STRENGTH_RANGE = (0.0, 1.5)
+DEFAULT_SHADE_STRENGTH = 1.0
 
 
 def overrides_path(root: Path) -> Path:
@@ -66,13 +72,23 @@ def load_overrides(root: Path) -> dict[str, dict[str, Any]]:
         shade = entry.get("shade")
         if shade is not None and shade not in SHADE_CHOICES:
             raise ValueError(f"{path}: {item_id}.shade must be one of {SHADE_CHOICES}")
-        for key in ("target_px", "yaw", "offset_x", "offset_y"):
+        for key in ("target_px", "yaw", "offset_x", "offset_y", "shade_strength"):
             if key in entry and not isinstance(entry[key], (int, float)):
                 raise ValueError(f"{path}: {item_id}.{key} must be a number")
+        if "shade_strength" in entry:
+            low, high = SHADE_STRENGTH_RANGE
+            if not low <= float(entry["shade_strength"]) <= high:
+                raise ValueError(
+                    f"{path}: {item_id}.shade_strength must be within {SHADE_STRENGTH_RANGE}")
         if "target_px" in entry and entry["target_px"] <= 0:
             raise ValueError(f"{path}: {item_id}.target_px must be positive")
         result[item_id] = entry
     return result
+
+
+# 写入时视为"等于没写"的值：默认强度 1.0；其余字段的 0/空串也是 no-op。
+# 旧档位 shade 不在这里：老文件怎么写就怎么留存，避免读一次写一次就改人家的语义。
+_NOOP_VALUES = {"shade_strength": DEFAULT_SHADE_STRENGTH}
 
 
 def save_overrides(root: Path, overrides: dict[str, dict[str, Any]]) -> Path:
@@ -80,7 +96,19 @@ def save_overrides(root: Path, overrides: dict[str, dict[str, Any]]) -> Path:
     path = overrides_path(root)
     clean: dict[str, dict[str, Any]] = {}
     for item_id, raw in sorted(overrides.items()):
-        entry = {key: raw[key] for key in FIELDS if key in raw and raw[key] not in (None, "", 0)}
+        entry: dict[str, Any] = {}
+        for key in FIELDS:
+            if key not in raw:
+                continue
+            value = raw[key]
+            if value in (None, ""):
+                continue
+            if key in _NOOP_VALUES and value == _NOOP_VALUES[key]:
+                continue
+            # 其余数值字段的 0 仍然是"没改"，但 shade_strength 的 0 是有效值（等于关阴影）。
+            if key != "shade_strength" and value == 0:
+                continue
+            entry[key] = value
         if entry:
             clean[item_id] = entry
     payload = {"version": OVERRIDE_VERSION, "items": clean}
@@ -101,6 +129,7 @@ def effective_params(item_id: str, auto: dict[str, Any],
         "offset_y": 0.0,
         "source": None,
         "shade": "game",
+        "shade_strength": DEFAULT_SHADE_STRENGTH,
         "note": "",
     }
     override = overrides.get(item_id, {})
@@ -118,55 +147,47 @@ def effective_params(item_id: str, auto: dict[str, Any],
         out["source"] = override["source"]
     if "shade" in override:
         out["shade"] = override["shade"]
+        out["shade_strength"] = LEGACY_SHADE_TO_STRENGTH.get(str(override["shade"]),
+                                                              DEFAULT_SHADE_STRENGTH)
+    if "shade_strength" in override:
+        # 新写法优先于旧档位：显式强度覆盖 shade 推导出来的值。
+        out["shade_strength"] = float(override["shade_strength"])
+        out["shade"] = "flat" if out["shade_strength"] <= 0 else "game"
     if "note" in override:
         out["note"] = str(override["note"])
     out["overridden"] = bool(override)
     return out
 
 
-def apply_yaw_rotation(model: dict[str, Any], yaw_delta: float) -> dict[str, Any]:
-    """Rotate every element around the block centre by an extra yaw (degrees).
+def yaw_gui_rotation(yaw_delta: float, base_rotation=(30.0, 225.0, 0.0)) -> list[float]:
+    """Camera rotation for an extra yaw: turn the *view*, never the geometry.
 
-    Implemented as a geometry rotation so display.gui stays the vanilla camera;
-    fit_gui_projection's inverse-projection maths assumes yaw 225. Exact for
-    elements whose own rotation is about y, approximate for x/z rotations.
+    旋转模型几何走不通：JSON 模型的 element 只能表达轴对齐 box（from/to 是两端角），
+    把角点各自绕 Y 转任意角度就不再是同一个 box，于是模型被压扁、翻倒、甚至解体。
+    正确做法是把 yaw 加进 proxy 的 display.gui.rotation——游戏按这个视角渲染，
+    几何原样不动，fit 也按同一视角量尺寸与居中。
     """
-    if abs(yaw_delta) < 1e-9:
-        return model
-    from gui_measure import apply_rotation
-
-    result = copy.deepcopy(model)
-
-    def rotate_point(point):
-        return [round(value, 6) for value in apply_rotation(point, [0.0, yaw_delta, 0.0], [8.0, 8.0, 8.0])]
-
-    for element in result.get("elements", []):
-        for key in ("from", "to", "origin"):
-            if key in element:
-                element[key] = rotate_point(element[key])
-        rotation = element.get("rotation")
-        if isinstance(rotation, dict) and "origin" in rotation:
-            rotation["origin"] = rotate_point(rotation["origin"])
-    return result
+    rotation = [float(value) for value in base_rotation]
+    rotation[1] = (rotation[1] + float(yaw_delta)) % 360.0
+    return rotation
 
 
-def screen_offset_to_geometry(offset_x: float, offset_y: float,
-                              gui_scale: float) -> tuple[float, float, float]:
-    """Convert a screen-pixel offset (+right, +down) into geometry translation."""
-    cos45 = math.cos(math.radians(45.0))
-    cos30 = math.cos(math.radians(30.0))
-    # 游戏的 screen x 是 -(x+z)*cos45（见 fit_gui_projection 的推导），所以
-    # 正 offset_x 需要负的 dx+dz。
-    sx = -offset_x / gui_scale
-    sy = offset_y / gui_scale
-    dx = dz = sx / (2.0 * cos45)
-    dy = -sy / cos30
-    return dx, dy, dz
+def screen_offset_to_geometry(offset_x: float, offset_y: float, gui_scale: float,
+                              gui_rotation=(30.0, 225.0, 0.0)) -> tuple[float, float, float]:
+    """Convert a screen-pixel offset (+right, +down) into a geometry translation.
+
+    Solved in the camera plane at the given rotation (see
+    item_icon_proxy.translation_for_screen), so it stays exact when an extra yaw
+    moves the display rotation off the vanilla 225.
+    """
+    from item_icon_proxy import translation_for_screen
+
+    return translation_for_screen(offset_x / gui_scale, offset_y / gui_scale, gui_rotation)
 
 
 def apply_screen_offset(model: dict[str, Any], texture_resolver,
-                        offset_x: float, offset_y: float,
-                        gui_scale: float) -> dict[str, Any] | None:
+                        offset_x: float, offset_y: float, gui_scale: float,
+                        gui_rotation=None) -> dict[str, Any] | None:
     """Translate the fitted geometry so its visible silhouette moves by a screen
     offset. Includes one residual-correction pass for rasterisation rounding.
     Returns None only if the offset model cannot be measured.
@@ -185,9 +206,10 @@ def apply_screen_offset(model: dict[str, Any], texture_resolver,
     before_bounds = before["bounds"]
     base_cx = (before_bounds[0] + before_bounds[2]) * 0.5
     base_cy = (before_bounds[1] + before_bounds[3]) * 0.5
-    dx, dy, dz = screen_offset_to_geometry(offset_x, offset_y, gui_scale)
-    cos45 = math.cos(math.radians(45.0))
-    cos30 = math.cos(math.radians(30.0))
+    rotation = tuple(gui_rotation or
+                     model.get("display", {}).get("gui", {}).get("rotation",
+                                                                 (30.0, 225.0, 0.0)))
+    dx, dy, dz = screen_offset_to_geometry(offset_x, offset_y, gui_scale, rotation)
 
     def shift(element, tx, ty, tz):
         for key in ("from", "to", "origin"):
@@ -216,9 +238,8 @@ def apply_screen_offset(model: dict[str, Any], texture_resolver,
     residual_x = (bounds[0] + bounds[2]) * 0.5 - target_cx
     residual_y = (bounds[1] + bounds[3]) * 0.5 - target_cy
     if abs(residual_x) > 1e-4 or abs(residual_y) > 1e-4:
-        rx = rz = residual_x / (2.0 * cos45)
-        ry = residual_y / cos30  # sy = -cos30*dy -> dy = -sy/cos30; ry is -dy
-        ry = -ry
+        from item_icon_proxy import translation_for_screen
+        rx, ry, rz = translation_for_screen(-residual_x, -residual_y, rotation)
         for element in result.get("elements", []):
             shift(element, rx, ry, rz)
     return result

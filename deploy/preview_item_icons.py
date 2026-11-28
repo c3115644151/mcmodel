@@ -32,8 +32,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import resolve
 from item_icon_proxy import VANILLA_BLOCK_GUI, collect_model_ids
 from icon_overrides import effective_params, load_overrides
-from item_icon_preview import (project_gui_translation, render_projected_icon,
-                               shade_profile, visible_projected_measurements)
+from item_icon_preview import (clamp_shade_strength, project_gui_translation,
+                               render_projected_icon, shade_profile,
+                               visible_projected_measurements)
 from item_ids import official_items
 from normalize_item_icons import load_model_with_parent, resolve_model, resolve_texture
 
@@ -77,7 +78,11 @@ def main() -> int:
                              f"icon drawn in the centred {ICON_CANVAS}px area)")
     parser.add_argument("--items", default="", help="comma-separated item ids; default is all")
     parser.add_argument("--shade", choices=("game", "flat"), default="game",
-                        help="face shading: 'game' matches the in-game capture, 'flat' disables it")
+                        help="face shading preset: 'game' = the measured in-game multipliers, "
+                             "'flat' = no shading (same as --shade-strength 0)")
+    parser.add_argument("--shade-strength", type=float, default=None,
+                        help="continuous shading strength: 0 = off, 1 = in-game match "
+                             "(default), up to 1.5 for a heavier look")
     parser.add_argument("--ignore-overrides", action="store_true",
                         help="ignore per-item shade/geometry overrides while previewing")
     parser.add_argument("--vanilla-reference", action="store_true",
@@ -101,9 +106,12 @@ def main() -> int:
     include_all = bool(requested) or args.all_proxies
     omitted_components = 0
     entries = []
-    # 每个物品可以单独切明暗档（item_icon_overrides.json 的 shade 字段）；
-    # 没有覆盖时用命令行给的档，默认 game。
+    # 每个物品可以单独设明暗强度（item_icon_overrides.json 的 shade_strength，
+    # 旧写法 shade=game/flat 仍然读得懂）；没有覆盖时用命令行给的强度。
     overrides = {} if args.ignore_overrides else load_overrides(root)
+    cli_strength = 1.0 if args.shade == "game" else 0.0
+    if args.shade_strength is not None:
+        cli_strength = clamp_shade_strength(args.shade_strength)
 
     for item_path in sorted(items_dir.glob("*.json")):
         if requested and item_path.stem not in requested:
@@ -111,7 +119,12 @@ def main() -> int:
         if not include_all and item_path.stem not in registered:
             omitted_components += 1
             continue
-        item_shade = overrides.get(item_path.stem, {}).get("shade", args.shade)
+        entry = overrides.get(item_path.stem, {})
+        item_strength = cli_strength
+        if "shade" in entry or "shade_strength" in entry:
+            item_strength = float(effective_params(
+                item_path.stem, {"target_px": 15.7, "floor_anchor": False},
+                overrides)["shade_strength"])
         definition = json.loads(item_path.read_text(encoding="utf-8"))
         model_root = definition.get("model", {})
         cases = model_root.get("cases", []) if model_root.get("type") == "minecraft:select" else []
@@ -141,7 +154,7 @@ def main() -> int:
                       bounds[1] * gui_scale[1] + screen_translation[1],
                       bounds[2] * gui_scale[0] + screen_translation[0],
                       bounds[3] * gui_scale[1] + screen_translation[1])
-            face_shade = shade_profile(item_shade)
+            face_shade = shade_profile(None, item_strength)
             rendered = render_projected_icon(model, lambda ref: resolve_texture(root, ref),
                                              gui_scale, gui_rotation, size=ICON_CANVAS,
                                              projection_offset=screen_translation,

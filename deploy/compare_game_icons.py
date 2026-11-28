@@ -41,7 +41,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # tint only, and materialInfo().shade() is read solely by BlockModelLighter
 # (block/chunk path). "flat" is therefore the parity table; the other two exist
 # so the residual can be measured against the old assumptions, not as options.
-from item_icon_preview import SHADE_FLAT, SHADE_GAME
+from item_icon_preview import SHADE_FLAT, SHADE_GAME, clamp_shade_strength, shade_strength_profile
 
 SHADING = {
     # What the game actually does; fitted by tools/deploy/diag_gui_shading.py.
@@ -161,10 +161,15 @@ def main() -> int:
     parser.add_argument("--items", default="", help="comma-separated ids; default all")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--shade", choices=sorted(SHADING), default="game")
+    parser.add_argument("--shade-strength", type=float, default=None,
+                        help="continuous strength between flat(0) and game(1); "
+                             "overrides --shade when given")
     parser.add_argument("--groups-per-row", type=int, default=4)
     args = parser.parse_args()
 
     face_shade = SHADING[args.shade]
+    if args.shade_strength is not None:
+        face_shade = shade_strength_profile(clamp_shade_strength(args.shade_strength))
 
     plan_path = Path(args.plan)
     if not plan_path.is_absolute():

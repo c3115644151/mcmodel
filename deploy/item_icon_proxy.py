@@ -249,9 +249,52 @@ def bake_root_transform(model):
     baked["__root_baked__"] = True
     return baked
 
+def screen_jacobian(gui_rotation) -> list[tuple[float, float]]:
+    """Screen-space shift per unit of model translation, at this camera rotation.
+
+    The GUI projection is orthographic, so a translation moves every projected point
+    by the same 2D amount: the Jacobian is constant. Three unit vectors give it.
+    """
+    from item_icon_preview import gui_screen_point
+
+    # gui_screen_point normalizes around the model centre (p-8)/16, so it is affine in
+    # p, not linear: take differences against the origin or the constant centre term
+    # gets counted as a slope (that is what made centring over-translate by ~15x).
+    origin = gui_screen_point([0.0, 0.0, 0.0], gui_rotation)[0]
+    columns = []
+    for axis in range(3):
+        unit = [0.0, 0.0, 0.0]
+        unit[axis] = 1.0
+        shifted = gui_screen_point(unit, gui_rotation)[0]
+        columns.append((shifted[0] - origin[0], shifted[1] - origin[1]))
+    return columns
+
+
+def translation_for_screen(offset_x: float, offset_y: float, gui_rotation
+                           ) -> tuple[float, float, float]:
+    """Minimal-length model translation whose projection shifts by (offset_x, offset_y).
+
+    Solving in the camera plane (instead of hand-deriving dx=dz for yaw 225) keeps
+    the centring exact at any yaw: an extra yaw must not change the camera, so the
+    fit has to work in whatever projection the rotated display gives.
+    """
+    a = [column[0] for column in screen_jacobian(gui_rotation)]
+    b = [column[1] for column in screen_jacobian(gui_rotation)]
+    m00 = sum(value * value for value in a)
+    m01 = sum(x * y for x, y in zip(a, b))
+    m11 = sum(value * value for value in b)
+    det = m00 * m11 - m01 * m01
+    if abs(det) < 1e-12:
+        return (0.0, 0.0, 0.0)
+    ux = (m11 * offset_x - m01 * offset_y) / det
+    uy = (-m01 * offset_x + m00 * offset_y) / det
+    return tuple(a[i] * ux + b[i] * uy for i in range(3))
+
+
 def fit_gui_projection(model: dict[str, Any], texture_resolver,
                        target_px: float = GUI_ICON_TARGET_PX,
-                       floor_anchor: bool = False):
+                       floor_anchor: bool = False,
+                       gui_rotation=None):
     """Fit an icon by its texture-visible GUI projection, not its 3D AABB.
 
     ``normalize_to_block`` scales by the longest axis-aligned edge, but Minecraft
@@ -276,8 +319,17 @@ def fit_gui_projection(model: dict[str, Any], texture_resolver,
     """
     from item_icon_preview import visible_projected_measurements
 
+    # Measurements read the camera from display.gui, so decide the rotation first:
+    # an extra yaw is a *display* rotation, never a geometry rotation (rotating an
+    # axis-aligned box's corners reshapes it — squashed, flipped or torn apart).
+    extra_rotation = tuple(gui_rotation or
+                           model.get("display", {}).get("gui", {}).get("rotation",
+                                                                     VANILLA_BLOCK_GUI["rotation"]))
+    working = copy.deepcopy(model)
+    working.setdefault("display", {}).setdefault("gui", {})["rotation"] = list(extra_rotation)
+
     measured = visible_projected_measurements(
-        model, texture_resolver, pixels_per_unit=16)
+        working, texture_resolver, pixels_per_unit=16)
     if measured is None:
         return None
     bounds = measured["bounds"]
@@ -295,7 +347,7 @@ def fit_gui_projection(model: dict[str, Any], texture_resolver,
     # after scaling and stepped back if the fitted shape would overflow them.
     scale = target_units / longest
 
-    fitted = copy.deepcopy(model)
+    fitted = copy.deepcopy(working)
     def scale_point(point):
         return [round(8.0 + (value - 8.0) * scale, 6) for value in point]
     def transform_element(element, transform):
@@ -316,22 +368,15 @@ def fit_gui_projection(model: dict[str, Any], texture_resolver,
     centre_x = (bounds[0] + bounds[2]) * 0.5
     centre_y = (bounds[1] + bounds[3]) * 0.5
 
-    # Undo the GUI projection of a centred offset. The game rotates the model by
-    # yaw 225 and projects (x, -y), which gives sx = -cos45*(x+z) and
-    # sy = -(cos30*y - sin30*(x-z)/sqrt2). Choosing dx=dz cancels x-z in sy (the
-    # sin30 term is unchanged) and moves sx by -cos45*(dx+dz), so dx=dz=+cx/(2cos45)
-    # zeroes sx; dy=cy/cos30 zeroes sy.
-    cos45 = math.cos(math.radians(45.0))
-    cos30 = math.cos(math.radians(30.0))
-    dx = centre_x / (2.0 * cos45)
-    dz = dx
+
+    # 居中：在相机平面里解平移。yaw 225 时它退化成旧的 dx=dz 结论（最小范数解
+    # 把横向偏移均分给 x 与 z），换到别的 yaw 仍然精确。
     if floor_anchor:
-        # 矮模型贴地: 把可见下边缘(bounds[3], 屏幕 y 越大越靠下)移到满格
-        # 方块的槽底。sy = -(cos30*y - sin30*(x-z)/sqrt2), 屏幕下移 delta
-        # 需要 y 反向变化: dy = (bounds[3] - FLOOR_Y)/cos30。x 仍居中。
-        dy = (bounds[3] - GUI_FLOOR_Y) / cos30
+        # 矮模型贴地: 可见下边缘(bounds[3])对齐满格方块的槽底。
+        offset = (-centre_x, GUI_FLOOR_Y - bounds[3])
     else:
-        dy = centre_y / cos30
+        offset = (-centre_x, -centre_y)
+    dx, dy, dz = translation_for_screen(offset[0], offset[1], extra_rotation)
 
     def recenter_point(point):
         return [round(point[0] + dx, 6),
@@ -341,6 +386,7 @@ def fit_gui_projection(model: dict[str, Any], texture_resolver,
         transform_element(element, recenter_point)
 
     fitted.setdefault("display", {})["gui"] = copy.deepcopy(VANILLA_BLOCK_GUI)
+    fitted["display"]["gui"]["rotation"] = list(extra_rotation)
     final = visible_projected_measurements(
         fitted, texture_resolver, pixels_per_unit=16)
     if final is None:
@@ -359,9 +405,10 @@ def fit_gui_projection(model: dict[str, Any], texture_resolver,
     else:
         residual_y = (final_box[1] + final_box[3]) * 0.5
     if abs(residual_x) > 1e-4 or abs(residual_y) > 1e-4:
-        rx = residual_x / (2.0 * cos45)
-        rz = rx
-        ry = -residual_y / cos30 if floor_anchor else residual_y / cos30
+        residual_offset = ((-residual_x, GUI_FLOOR_Y - final_box[3]) if floor_anchor
+                           else (-residual_x, -residual_y))
+        rx, ry, rz = translation_for_screen(residual_offset[0], residual_offset[1],
+                                            extra_rotation)
         def refine(point):
             return [round(point[0] + rx, 6),
                     round(point[1] + ry, 6),
