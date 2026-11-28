@@ -2,6 +2,18 @@
 <style>
 :root{--bg:#18181b;--panel:#232327;--panel2:#2d2d32;--line:#3a3a42;--text:#e4e4e7;--muted:#9a9aa3;--accent:#5eead4;--accent2:#2dd4bf;--slot:#8a8a8f}
 *{box-sizing:border-box}
+/* 原生滚动条在深色面板上像是"系统件"，而且各浏览器样子不同：全部隐藏，改成
+   一条自绘细条（常驻半透明、悬停变亮、拖动用强调色）。自绘条必须挂在滚动容器
+   外面的 wrapper 上，挂在里面会跟着内容一起滚走。 */
+#grid,main{scrollbar-width:none;-ms-overflow-style:none}
+#grid::-webkit-scrollbar,main::-webkit-scrollbar{width:0;height:0;display:none}
+.scrollhost{position:relative;display:flex;min-height:0;min-width:0;overflow:hidden}
+.scrollhost>#grid,.scrollhost>main{flex:1 1 auto;min-width:0}
+.sbar{position:absolute;top:2px;right:0;bottom:2px;width:11px;z-index:6;opacity:.6;transition:opacity .15s}
+.scrollhost:hover .sbar,.sbar.on{opacity:1}
+.sbar i{position:absolute;right:3px;width:6px;border-radius:3px;background:#55555f;cursor:grab;transition:background .12s}
+.sbar i:hover{background:#8b8b9a}
+.sbar i.drag{background:var(--accent2);cursor:grabbing}
 body{margin:0;font:13px/1.5 -apple-system,"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--text);height:100vh;display:grid;grid-template-rows:auto 1fr}
 header{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
 header h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.3px}
@@ -11,6 +23,8 @@ header button{background:var(--accent);color:#06231f;border:0;border-radius:5px;
 header button:hover{background:var(--accent2)}
 #body{display:grid;grid-template-columns:var(--sidebar,300px) 5px 1fr;min-height:0}
 aside{border-right:0;display:flex;flex-direction:column;min-height:0;background:var(--panel)}
+aside>.scrollhost{flex:1 1 auto}
+main{min-height:0}
 #splitter{cursor:col-resize;background:var(--line);position:relative;transition:background .15s}
 #splitter:hover,#splitter.drag{background:var(--accent)}
 #splitter::after{content:"";position:absolute;inset:0 -3px}
@@ -18,41 +32,60 @@ aside .search{padding:10px;border-bottom:1px solid var(--line)}
 aside .searchbar{display:flex;gap:8px;align-items:center}
 aside input[type=text]{flex:1;min-width:0;padding:7px 9px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:5px;font-size:12px}
 aside .cols{display:flex;align-items:center;gap:3px;color:var(--muted);font-size:10px;white-space:nowrap}
-aside .cols button{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:3px;width:20px;height:24px;cursor:pointer;font-size:13px;line-height:1}
-#grid{overflow-y:auto;padding:8px;display:grid;grid-template-columns:repeat(var(--cols,2),minmax(0,1fr));gap:8px;align-content:start}
-.cell{position:relative;width:100%;height:0;padding-bottom:calc(100% - 4px);background:var(--slot);border:2px solid transparent;border-radius:3px;cursor:pointer;overflow:hidden;transition:border-color .12s}
-.cell:hover{border-color:var(--muted)}
-.cell.sel{border-color:var(--accent)}
-.cell img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;image-rendering:pixelated;display:block}
-.cell .tag{position:absolute;bottom:0;left:0;right:0;font-size:9px;background:linear-gradient(transparent,#000e);color:#fff;text-align:center;padding:5px 1px 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+aside .cols button{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:3px;min-width:20px;height:24px;cursor:pointer;font-size:13px;line-height:1}
+/* 「自适应」：列数与整数倍缩放一起搜，按填满率排；手动 ± 之后进入手动模式。 */
+aside .cols button.auto{width:auto;padding:0 6px;font-size:10px;color:var(--muted)}
+aside .cols button.auto.on{background:var(--accent);color:#06231f;border-color:var(--accent)}
+/* 每格就是原版槽位本身：调用 /api/slot 的 18×18 精灵（上/左 #373737、下/右白、
+   内部 #8b8b8b），再按整数 zoom（4–8）放大，图标摆在 1px 内边里的 16×16 区域。
+   缩略图按 16×zoom 渲染，所以 CSS 尺寸、图片像素、游戏像素三者一一对应——
+   网页里看到的比例就是游戏里的比例，不存在"网页放大多少倍"的含糊。 */
+/* 滚动容器只负责滚；面板背景与格子一起放进 #board——背景挂在上滚动容器上会固定
+   不动，滚起来就像贴在屏幕上（这正是之前"背景不跟着滚"的原因）。 */
+#grid{overflow-y:auto;padding:0 14px 0 0}
+#board{background-repeat:no-repeat;background-position:0 0;image-rendering:pixelated;margin:8px auto 12px;padding:var(--pad,28px);width:max-content}
+#cells{display:grid;grid-template-columns:repeat(var(--cols,6),var(--slot,72px));gap:0}
+/* 槽位底由面板图（/api/panel，原版容器九宫格 + 平铺的原版槽位精灵）提供，
+   格子本身透明——相邻槽位的深/浅包边就会像游戏里那样连成一片网格。 */
+.cell{position:relative;width:var(--slot,72px);height:var(--slot,72px);cursor:pointer}
+/* 1/18 与 16/18：图标正好落在槽位的 1px 内边里，任一整数字号都保持这个比例。 */
+.cell img{position:absolute;left:5.5556%;top:5.5556%;width:88.889%;height:88.889%;object-fit:contain;image-rendering:pixelated;display:block}
+.cell.sel{box-shadow:inset 0 0 0 2px var(--accent)}
+.cell:hover:not(.sel){box-shadow:inset 0 0 0 1px #cfcfd6}
+/* 名字平时不挡图标，悬停才浮出来（图标名字看 title 也能拿到）。 */
+.cell .tag{position:absolute;left:1px;right:1px;bottom:1px;font-size:9px;background:linear-gradient(transparent,#000c);color:#fff;text-align:center;padding:6px 1px 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0;transition:opacity .12s}
+.cell:hover .tag{opacity:1}
 .cell .dot{position:absolute;top:3px;right:3px;width:7px;height:7px;background:var(--accent);border-radius:50%;box-shadow:0 0 0 1px #000}
-main{padding:18px 22px;overflow-y:auto;display:grid;grid-template-columns:minmax(360px,1fr) 340px;gap:22px;align-content:start}
+main{padding:18px 22px;overflow-y:auto;overflow-x:hidden;display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:22px;align-content:start;min-width:0}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px}
 .panel h2{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:0 0 12px;font-weight:600}
 .stage{display:flex;gap:16px;align-items:flex-start;justify-content:center}
 .tile{text-align:center}
-.tile .frame{width:180px;height:180px;background:var(--slot);border:1px solid var(--line);border-radius:4px;display:flex;align-items:center;justify-content:center;position:relative}
-.tile .frame img{image-rendering:pixelated;display:block}
-.tile .frame.native img{image-rendering:pixelated}
+/* 放大预览也放在一格原版槽位里（18×10=180px，整数倍），图标按 1/18 内缩。 */
+.tile .frame{width:180px;height:180px;background:url('/api/slot') 0 0/100% 100% no-repeat;image-rendering:pixelated;display:block;position:relative}
+.tile .frame img{position:absolute;left:5.5556%;top:5.5556%;width:88.889%;height:88.889%;image-rendering:pixelated;object-fit:contain;display:block}
+
 .tile .cap{font-size:11px;color:var(--muted);margin-top:6px}
 .badge{display:inline-block;font-size:10px;padding:2px 8px;border-radius:10px;background:#3a3a42;color:var(--muted);margin-left:8px}
 .badge.on{background:var(--accent);color:#06231f}
-.refbar{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
-.refbar summary{cursor:pointer;font-size:12px;color:var(--muted);user-select:none}
-.refbar .refbody{padding-top:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-#refStack{width:180px;height:180px;background:var(--slot);position:relative;display:none;border-radius:4px;flex:none}
-#refStack img{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated}
-#refImg{opacity:.5}
+.dbg{margin-top:16px;border-top:1px solid var(--line);padding-top:12px}
+.dbg summary{cursor:pointer;font-size:12px;color:var(--muted);user-select:none}
+.dbg[open] summary{color:var(--text)}
 .metrics{font-family:ui-monospace,monospace;font-size:11px;color:var(--accent);background:var(--bg);border-radius:5px;padding:10px 12px;margin-top:14px;white-space:pre-wrap;line-height:1.6}
 .ctxbar{margin-top:18px}
-.ctxcap{font-size:11px;color:var(--muted);margin-bottom:20px}
-.ctxrow{display:flex;gap:6px;flex-wrap:nowrap;align-items:flex-start}
-.ctxcell{position:relative;width:64px;height:64px;background:#8b8b8b;border:1px solid #373737;flex:0 0 auto}
-.ctxcell img{display:block;width:64px;height:64px;image-rendering:pixelated}
-.ctxcell.cur{outline:2px solid var(--accent);outline-offset:1px}
-.ctxcell em{position:absolute;left:0;top:64px;width:64px;font-size:9px;font-style:normal;color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.ctxcap{font-size:11px;color:var(--muted);margin-bottom:10px}
+/* 每格必须是正方形（一格 = 一个 slot）：原来格子里塞了名字，图片正方形而格子变长条，
+   对比时反而看不出图标在格里的比例。名字走 title，不占版面。 */
+/* 相邻对比也是一条连续的槽位（无缝），和背包里一排槽一样。 */
+.ctxrow{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:0;max-width:100%;overflow:hidden}
+.ctxcell{position:relative;min-width:0;aspect-ratio:1/1;background:url('/api/slot') 0 0/100% 100% no-repeat;image-rendering:pixelated;overflow:hidden;cursor:pointer;transition:box-shadow .12s}
+.ctxcell img{position:absolute;left:5.5556%;top:5.5556%;width:88.889%;height:88.889%;image-rendering:pixelated;object-fit:contain;display:block}
+.ctxcell:hover{box-shadow:inset 0 0 0 1px #cfcfd6}
+/* 当前项不再用外描边（会在视觉上把对比行切断），改成格子内部的强调色描边。 */
+.ctxcell.cur{box-shadow:inset 0 0 0 2px var(--accent)}
 .ctl label{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin:14px 0 5px}
 .ctl label b{color:var(--text);font-variant-numeric:tabular-nums;font-weight:500}
+.ctl .hint{font-size:10px;color:var(--muted);line-height:1.45;margin-top:4px}
 .ctl input[type=range]{width:100%;accent-color:var(--accent)}
 .ctl .dual{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .ctl select,.ctl textarea{width:100%;padding:7px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:5px;font:inherit;font-size:12px}
@@ -71,29 +104,23 @@ main{padding:18px 22px;overflow-y:auto;display:grid;grid-template-columns:minmax
 </header>
 <div id="body">
 <aside>
-<div class="search"><div class="searchbar"><input type="text" id="filter" placeholder="搜索图标名…"><span class="cols"><button onclick="setCols(-1)" title="减少列数">−</button><span id="colLabel">2</span>列<button onclick="setCols(1)" title="增加列数">+</button></span></div></div>
-<div id="grid"></div>
+<div class="search"><div class="searchbar"><input type="text" id="filter" placeholder="搜索图标名…"><span class="cols"><button onclick="setCols(-1)" title="减少列数">−</button><span id="colLabel">2</span>列<button onclick="setCols(1)" title="增加列数">+</button><button id="autoFit" class="auto" onclick="setAutoFit()" title="按栏宽自动填满（列数与整数倍缩放一起算）">自适应</button></span></div></div>
+<div class="scrollhost"><div id="grid"><div id="board"><div id="cells"></div></div></div><div class="sbar"></div></div>
 </aside>
 <div id="splitter"></div>
-<main>
+<div class="scrollhost"><main>
 <section class="panel">
 <h2>预览 <span class="badge" id="badge">默认</span></h2>
 <div class="stage">
-<div class="tile"><div class="frame"><img id="big" width="180" height="180"></div><div class="cap">放大预览 · 11×</div></div>
-<div class="tile"><div class="frame" style="width:96px;height:96px"><img id="native" width="64" height="64"></div><div class="cap">游戏原尺寸 · 4×</div></div>
+<div class="tile"><div class="frame"><img id="big" width="180" height="180"></div><div class="cap">放大预览 · 一格槽位（10×）</div></div>
 </div>
 <div class="ctxbar">
-<div class="ctxcap">相邻对比 · 原尺寸 4×（左三 + 当前 + 右三，当前项跟着微调实时更新）</div>
+<div class="ctxcap">相邻图标 · 每格就是游戏里的 1 格（当前项居中，可点邻居切过去）</div>
 <div class="ctxrow" id="ctxrow"></div>
 </div>
-<details class="refbar"><summary>▸ 游戏截图对照（叠加找差异）</summary>
-<div class="refbody">
-<input type="file" id="refFile" accept="image/png" onchange="loadRef(event)" style="font-size:11px;color:var(--muted)">
-<label style="font-size:11px;color:var(--muted)">透明度 <span id="vRef">50%</span></label>
-<input type="range" id="refop" min="0" max="100" value="50" oninput="$('vRef').textContent=this.value+'%';$('refImg').style.opacity=this.value/100" style="width:100px;accent-color:var(--accent)">
-<div id="refStack"><img id="refBase"><img id="refImg"></div>
-</div></details>
+<details class="dbg"><summary>渲染参数（调试用，不影响图标）</summary>
 <div class="metrics" id="metrics"></div>
+</details>
 </section>
 <section class="panel ctl" id="controls">
 <h2>微调参数</h2>
@@ -107,8 +134,9 @@ main{padding:18px 22px;overflow-y:auto;display:grid;grid-template-columns:minmax
 <input type="range" id="yaw" min="-180" max="180" step="1">
 <label>对齐方式</label>
 <select id="anchor"><option value="auto">自动（按投影高度）</option><option value="center">居中</option><option value="floor">贴底</option></select>
-<label>面明暗 <span style="font-size:10px">game = 与游戏一致</span></label>
-<select id="shade"><option value="game">游戏阴影（默认）</option><option value="flat">关闭阴影</option></select>
+<label>阴影强度 <span><b id="vShade">100</b>%</span></label>
+<input type="range" id="shadeStrength" min="0" max="150" step="5">
+<div class="hint">0 = 关阴影，100 = 与游戏实测一致，可往上压到 150。自带亮面的模型（火盆、灯）常在 40–70 更耐看。</div>
 <label>替换源模型</label>
 <select id="source"><option value="">（保持默认）</option></select>
 <label>备注 <span style="font-size:10px">struct: 开头 = 结构问题需改脚本</span></label>
@@ -118,22 +146,103 @@ main{padding:18px 22px;overflow-y:auto;display:grid;grid-template-columns:minmax
 <button class="ghost" onclick="reset()">重置</button>
 </div>
 </section>
-</main></div>
+</main><div class="sbar"></div></div></div>
 <div id="toast"></div>
 <script>
 let items=[],overrides={},selected=null,sources=[],ver={};
 // 缩略图 URL 带版本号：保存后该物品的 proxy 变了，但浏览器会按 URL 缓存图片，
 // 不带版本号时左侧格子会继续显示旧图（服务端已发 no-store，仍保险起见）。
-function thumbUrl(id,v){return '/api/thumb?item='+encodeURIComponent(id)+'&v='+(v!==undefined?v:(ver[id]||0))}
+// 格子可以被拉到 100px 以上，64px 画布再放大就发虚；按当前格宽选 64 或 128。
+// 槽位按整数倍放大：zoom = 每游戏像素多少屏幕像素（4–8）。SVG/位图都按整数倍
+// 缩放，18×18 的原版槽位与 16×16 的图标才会像游戏里那样边缘清晰、比例不变。
+const SLOT_PIXELS=18, ICON_PIXELS=16, ZOOM_MIN=2, ZOOM_MAX=8;
+// 面板宽 = (cols*18 + 2*7) * zoom。整数倍缩放必然留下不足一列的空隙，
+// 所以自适应模式下把 (列数, zoom) 一起搜：填满率最高者胜，同分取更大的 zoom。
+const PANEL_PAD=7, COLS_MIN=2, COLS_MAX=12;
+let autoFit=true;
+const manualCols=(function(){const v=+localStorage.getItem('it_cols_v2');return (v>=COLS_MIN&&v<=COLS_MAX)?v:6})();
+let cols=manualCols;
+autoFit=localStorage.getItem('it_autofit_v1')!=='0';
+let fitState={cols:cols,zoom:4};
+function availableWidth(){
+const g=$('grid');return Math.max(60,((g&&g.clientWidth)?g.clientWidth:Math.round(window.innerWidth*0.44))-14)}
+function computeFit(){
+const avail=availableWidth();
+if(!autoFit){return {cols:cols,
+zoom:Math.max(ZOOM_MIN,Math.min(ZOOM_MAX,Math.floor(avail/(cols*SLOT_PIXELS+2*PANEL_PAD))))}}
+// 只在"看得清"的档位里挑（一格 72–126px）：一味求填满会选到 3 倍缩放、
+// 54px 的小格，反而不好微调；没有合适档位时退回纯填满最优。
+let best=null, fallback=null;
+for(let zoom=ZOOM_MIN;zoom<=ZOOM_MAX;zoom++){
+const c=Math.min(COLS_MAX,Math.floor((avail-2*PANEL_PAD*zoom)/(SLOT_PIXELS*zoom)));
+if(c<COLS_MIN)continue;
+const fill=zoom*(c*SLOT_PIXELS+2*PANEL_PAD), score=fill/avail;
+const cand={cols:c,zoom:zoom,score:score};
+if(!fallback||score>fallback.score+1e-6||(Math.abs(score-fallback.score)<=1e-6&&zoom>fallback.zoom))fallback=cand;
+const slotPx=SLOT_PIXELS*zoom;
+if(slotPx<72||slotPx>126)continue;
+if(!best||score>best.score+1e-6||(Math.abs(score-best.score)<=1e-6&&zoom>best.zoom))best=cand}
+return best||fallback||{cols:COLS_MIN,zoom:ZOOM_MIN}}
+function refreshFit(){fitState=computeFit();cols=fitState.cols;return fitState}
+function slotZoom(){return fitState.zoom}
+function slotPx(){return SLOT_PIXELS*slotZoom()}
+function iconPx(){return ICON_PIXELS*slotZoom()}
+function thumbUrl(id,v,px){return '/api/thumb?item='+encodeURIComponent(id)+'&v='+(v!==undefined?v:(ver[id]||0))+'&px='+(px||iconPx())}
 function visibleItems(){const q=$('filter').value.toLowerCase().trim();return items.filter(i=>i.id.toLowerCase().includes(q))}
 const $=x=>document.getElementById(x);
 function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),1800)}
+// 自绘滚动条：原生条被 CSS 隐藏，这里按 scrollHeight/clientHeight 画一根细条。
+// 位置百分比来自 scrollTop，尺寸变化用 ResizeObserver + MutationObserver 跟着更新。
+function attachBar(scroller,host){
+if(!scroller||!host)return null;
+const bar=host.querySelector('.sbar');if(!bar)return null;
+const thumb=document.createElement('i');bar.appendChild(thumb);
+let dragging=false,grab=0;
+const maxScroll=()=>Math.max(0,scroller.scrollHeight-scroller.clientHeight);
+function sync(){
+const max=maxScroll();
+if(max<2){bar.style.display='none';return}
+bar.style.display='block';
+const trackH=bar.clientHeight;
+const h=Math.max(26,Math.round(trackH*scroller.clientHeight/scroller.scrollHeight));
+thumb.style.height=h+'px';
+thumb.style.top=Math.round((trackH-h)*(scroller.scrollTop/max))+'px'}
+scroller.addEventListener('scroll',sync,{passive:true});
+window.addEventListener('resize',sync);
+if(window.ResizeObserver)new ResizeObserver(sync).observe(scroller);
+if(window.MutationObserver)new MutationObserver(sync).observe(scroller,{childList:true,subtree:true});
+// 滚轮落在条上也要滚内容：条不在滚动容器里，事件不会自动冒泡到它。
+bar.addEventListener('wheel',e=>{scroller.scrollTop+=e.deltaY;e.preventDefault()},{passive:false});
+bar.addEventListener('mousedown',e=>{
+if(e.target===thumb)return;
+const r=bar.getBoundingClientRect();
+scroller.scrollTop=(e.clientY-r.top)/r.height*scroller.scrollHeight-scroller.clientHeight/2});
+thumb.addEventListener('mousedown',e=>{dragging=true;grab=e.clientY-thumb.getBoundingClientRect().top;
+thumb.classList.add('drag');document.body.style.userSelect='none';e.preventDefault();e.stopPropagation()});
+window.addEventListener('mousemove',e=>{
+if(!dragging)return;
+const r=bar.getBoundingClientRect(),h=thumb.offsetHeight;
+const ratio=Math.min(1,Math.max(0,(e.clientY-r.top-grab)/Math.max(1,r.height-h)));
+scroller.scrollTop=ratio*maxScroll()});
+window.addEventListener('mouseup',()=>{if(!dragging)return;dragging=false;
+thumb.classList.remove('drag');document.body.style.userSelect=''});
+sync();return sync}
+// 整块面板由服务端拼：原版容器九宫格边框 + 平铺的原版槽位精灵，
+// 所以左栏看到的就是"物品摆在一个 GUI 里"，不是一堆分开的小卡片。
+function paintPanel(){
+const board=$('board');const list=visibleItems();const zoom=slotZoom();
+const rows=Math.max(1,Math.ceil(list.length/Math.max(1,cols)));
+board.style.backgroundImage="url('/api/panel?rows="+rows+"&cols="+cols+"')";
+board.style.backgroundSize=(cols*SLOT_PIXELS+2*PANEL_PAD)*zoom+'px '+(rows*SLOT_PIXELS+2*PANEL_PAD)*zoom+'px'}
 function buildGrid(){
-const g=$('grid');g.innerHTML='';
+const g=$('cells');g.innerHTML='';
+const px=iconPx();
+paintPanel();
 visibleItems().forEach(i=>{
 const c=document.createElement('div');c.className='cell'+(i.id===selected?' sel':'');c.dataset.id=i.id;
-c.innerHTML='<img src="'+thumbUrl(i.id)+'"><div class="tag">'+i.id+'</div>'+(overrides[i.id]?'<div class="dot"></div>':'');
-c.onclick=()=>select(i.id);c.title=i.id;g.appendChild(c)})}
+c.innerHTML='<img src="'+thumbUrl(i.id,undefined,px)+'"><div class="tag">'+i.id+'</div>'+(overrides[i.id]?'<div class="dot"></div>':'');
+c.onclick=()=>select(i.id);c.title=i.id;g.appendChild(c)});
+markSel(selected)}
 function patchCell(id){
 const c=document.querySelector('.cell[data-id="'+CSS.escape(id)+'"]');if(!c)return;
 const img=c.querySelector('img');if(img)img.src=thumbUrl(id);
@@ -144,39 +253,53 @@ if(c.querySelector('.dot')&&!overrides[id]){const d=c.querySelector('.dot');d.re
 function renderCtx(curUrl){
 const row=$('ctxrow');if(!row)return;row.innerHTML='';
 const list=visibleItems();const idx=list.findIndex(i=>i.id===selected);if(idx<0)return;
-// 固定 7 格、当前项永远在第 4 格：左右各取 min(3, 余量) 个邻居，缺的位置补空位，
-// 这样靠边时布局不跳，也永远不会因为补位而挤到第二行。
-const lead=Math.min(3,idx);
-const trail=Math.min(3,list.length-1-idx);
-const cells=[];
-for(let k=0;k<3-lead;k++)cells.push(null);
-cells.push(...list.slice(idx-lead,idx+trail+1));
-for(let k=0;k<3-trail;k++)cells.push(null);
-cells.forEach(i=>{
-if(i===null){const ph=document.createElement('div');ph.className='ctxcell';ph.style.visibility='hidden';row.appendChild(ph);return}
-const c=document.createElement('div');c.className='ctxcell'+(i.id===selected?' cur':'');
+// 固定 7 格、当前项恒在第 4 格。头尾不补空洞而是环绕取邻居：列表首尾也排满，
+// 不会出现"半排空格"那种没做完的样子，位置也不会因为选到边界而跳动。
+const n=list.length;
+for(let k=-3;k<=3;k++){
+const i=((idx+k)%n+n)%n;const item=list[i];
+const c=document.createElement('div');c.className='ctxcell'+(k===0?' cur':'');
+c.dataset.id=item.id;c.title=item.id;
 const img=document.createElement('img');
-img.src=(i.id===selected&&curUrl)?curUrl:thumbUrl(i.id);
-const t=document.createElement('em');t.textContent=i.id;
-c.appendChild(img);c.appendChild(t);row.appendChild(c)})}
+img.src=(k===0&&curUrl)?curUrl:thumbUrl(item.id);
+c.onclick=()=>select(item.id);
+c.appendChild(img);row.appendChild(c)}}
 async function refresh(){await loadOverrides();const d=await(await fetch('/api/items')).json();items=d.items;$('stat').textContent=items.length+' 个物品 · '+Object.keys(overrides).length+' 项已调';buildGrid()}
 async function loadOverrides(){const d=await(await fetch('/api/overrides')).json();overrides=d.items||{}}
 async function loadSources(){const d=await(await fetch('/api/source-options')).json();sources=d.options||[];const s=$('source');sources.forEach(o=>{const p=document.createElement('option');p.value=o;p.textContent=o.split('/').pop();s.appendChild(p)})}
-function candidate(){return{target_px:+$('target').value,offset_x:+$('ox').value,offset_y:+$('oy').value,yaw:+$('yaw').value,anchor:$('anchor').value,source:$('source').value,shade:$('shade').value,note:$('note').value}}
-function fill(p){$('target').value=p.target_px??15.7;$('ox').value=p.offset_x??0;$('oy').value=p.offset_y??0;$('yaw').value=p.yaw??0;$('anchor').value=p.anchor??'auto';$('source').value=p.source??'';$('shade').value=p.shade??'game';$('note').value=p.note??'';sync()}
-function sync(){$('vT').textContent=(+$('target').value).toFixed(1);$('vX').textContent=(+$('ox').value).toFixed(2);$('vY').textContent=(+$('oy').value).toFixed(2);$('vR').textContent=(+$('yaw').value).toFixed(0)}
+function candidate(){return{target_px:+$('target').value,offset_x:+$('ox').value,offset_y:+$('oy').value,yaw:+$('yaw').value,anchor:$('anchor').value,source:$('source').value,shade_strength:(+$('shadeStrength').value)/100,note:$('note').value}}
+function fill(p){
+const legacy=(p.shade==='flat')?0:1;
+const strength=(p.shade_strength!==undefined&&p.shade_strength!==null)?p.shade_strength:legacy;
+$('target').value=p.target_px??15.7;$('ox').value=p.offset_x??0;$('oy').value=p.offset_y??0;$('yaw').value=p.yaw??0;
+$('anchor').value=p.anchor??'auto';$('source').value=p.source??'';
+$('shadeStrength').value=Math.round(Math.max(0,Math.min(1.5,strength))*100);
+$('note').value=p.note??'';sync()}
+function sync(){$('vT').textContent=(+$('target').value).toFixed(1);$('vX').textContent=(+$('ox').value).toFixed(2);$('vY').textContent=(+$('oy').value).toFixed(2);$('vR').textContent=(+$('yaw').value).toFixed(0);$('vShade').textContent=(+$('shadeStrength').value).toFixed(0)}
 let deb;function sched(){clearTimeout(deb);deb=setTimeout(preview,100)}
-async function preview(){if(!selected)return;const c=candidate();const r=await fetch('/api/preview?item='+encodeURIComponent(selected)+'&candidate='+encodeURIComponent(JSON.stringify(c)));const d=await r.json();
+// 候选渲染要 0.7–1.8s，连点两个图标时先发的请求可能后到，把新选择盖掉。
+// 只认最后一次请求：序号对不上的响应直接丢，并给图打上它属于哪个物品。
+let previewSeq=0;
+async function preview(){if(!selected)return;const item=selected,seq=++previewSeq;const c=candidate();
+const r=await fetch('/api/preview?item='+encodeURIComponent(item)+'&candidate='+encodeURIComponent(JSON.stringify(c)));const d=await r.json();
+if(seq!==previewSeq||item!==selected)return;
 if(d.error){$('metrics').textContent='ERROR: '+d.error;return}
-const url='data:image/png;base64,'+d.png;$('big').src=url;$('native').src=url;$('refBase').src=url;renderCtx(url);
-const p=d.report;$('metrics').textContent='target  '+p.target_px+' px      anchor  '+(p.floor_anchor?'floor':'center')+'   shade  '+p.shade+'   |   bounds '+JSON.stringify(p.bounds)+'   |   offset ('+p.offset_x+','+p.offset_y+')  yaw '+p.yaw}
+const url='data:image/png;base64,'+d.png;$('big').src=url;
+$('big').dataset.item=item;$('metrics').dataset.item=item;renderCtx(url);
+const p=d.report;$('metrics').textContent='target  '+p.target_px+' px      anchor  '+(p.floor_anchor?'floor':'center')+'   shade  '+(p.shade_strength??1).toFixed(2)+'   |   bounds '+JSON.stringify(p.bounds)+'   |   offset ('+p.offset_x+','+p.offset_y+')  yaw '+p.yaw}
+// 只移动高亮，不重建网格：buildGrid 会清空 #grid，滚动位置随之归零，
+// 点一个图标就把左栏弹回顶部。选中状态只影响 .sel 这一个 class。
+function markSel(id){
+const prev=document.querySelector('.cell.sel');if(prev)prev.classList.remove('sel');
+if(!id)return;
+const cur=document.querySelector('.cell[data-id="'+CSS.escape(id)+'"]');if(cur)cur.classList.add('sel')}
 async function select(id){
-selected=id;const o=overrides[id]||{};
-fill({target_px:o.target_px??15.7,offset_x:o.offset_x??0,offset_y:o.offset_y??0,yaw:o.yaw??0,anchor:o.anchor??'auto',source:o.source??'',shade:o.shade??'game',note:o.note??''});
+selected=id;clearTimeout(deb);const o=overrides[id]||{};
+fill({target_px:o.target_px??15.7,offset_x:o.offset_x??0,offset_y:o.offset_y??0,yaw:o.yaw??0,anchor:o.anchor??'auto',source:o.source??'',shade:o.shade??'game',shade_strength:o.shade_strength,note:o.note??''});
 const on=!!overrides[id];$('badge').textContent=on?'已调':'默认';$('badge').className='badge'+(on?' on':'');
-buildGrid();renderCtx();await preview()}
-['target','ox','oy','yaw'].forEach(k=>$(k).addEventListener('input',()=>{sync();sched()}));
-['anchor','source','shade'].forEach(k=>$(k).addEventListener('change',sched));
+markSel(id);renderCtx();await preview()}
+['target','ox','oy','yaw','shadeStrength'].forEach(k=>$(k).addEventListener('input',()=>{sync();sched()}));
+['anchor','source'].forEach(k=>$(k).addEventListener('change',sched));
 async function save(){
 if(!selected)return;overrides[selected]=candidate();
 const r=await fetch('/api/overrides',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:overrides})});const d=await r.json();
@@ -194,16 +317,38 @@ await fetch('/api/overrides',{method:'POST',headers:{'Content-Type':'application
 ver[selected]=(ver[selected]||0)+1;patchCell(selected);$('badge').textContent='默认';$('badge').className='badge';
 $('stat').textContent=items.length+' 个物品 · '+Object.keys(overrides).length+' 项已调';
 toast('已重置 '+selected);await select(selected)}
-function loadRef(ev){const f=ev.target.files[0];if(!f)return;const rd=new FileReader();rd.onload=()=>{$('refImg').src=rd.result;$('refStack').style.display='block'};rd.readAsDataURL(f)}
 $('filter').addEventListener('input',()=>{buildGrid();renderCtx()});
 // Sidebar width + column count are persisted in localStorage.
-let sidebarW=+(localStorage.getItem('it_sidebar')||340), cols=+(localStorage.getItem('it_cols')||2);
-function applyLayout(){document.documentElement.style.setProperty('--sidebar',sidebarW+'px');document.documentElement.style.setProperty('--cols',cols);$('colLabel').textContent=cols}
-function setCols(d){cols=Math.max(2,Math.min(6,cols+d));localStorage.setItem('it_cols',cols);applyLayout()}
+// 左侧栏是视觉核心，默认就占 ~40% 宽、6 列；之前默认 300px/2 列显得空。
+// 旧的 it_sidebar/it_cols 是 340px/2 列时代存下的窄值，沿用会让改动等于没发生；
+// 换到 it_sidebar_v2/it_cols_v2，默认值在下次打开时生效一次，之后照旧记拖拽结果。
+let sidebarW=+(localStorage.getItem('it_sidebar_v2')||Math.round(window.innerWidth*0.4));
+let lastPx=0;
+function applyLayout(){
+document.documentElement.style.setProperty('--sidebar',sidebarW+'px');
+const previous=fitState;
+const fit=refreshFit();
+document.documentElement.style.setProperty('--cols',cols);
+$('colLabel').textContent=cols;
+const zoom=fit.zoom;
+document.documentElement.style.setProperty('--slot',slotPx()+'px');
+document.documentElement.style.setProperty('--pad',(PANEL_PAD*zoom)+'px');
+// 只在 zoom 档位或列数变化时重建网格：拖动分隔条会连续触发 applyLayout，
+// 每像素重刷一遍缩略图会把服务打满。
+if(items.length){if(zoom!==lastPx||fit.cols!==previous.cols){lastPx=zoom;buildGrid()}}
+$('autoFit').classList.toggle('on',autoFit);renderCtx()}
+function setCols(d){autoFit=false;cols=Math.max(COLS_MIN,Math.min(COLS_MAX,cols+d));
+localStorage.setItem('it_cols_v2',cols);localStorage.setItem('it_autofit_v1','0');applyLayout()}
+function setAutoFit(){autoFit=true;localStorage.setItem('it_autofit_v1','1');applyLayout()}
 (function(){const sp=$('splitter');let dragging=false;
 sp.addEventListener('mousedown',e=>{dragging=true;sp.classList.add('drag');document.body.style.cursor='col-resize';e.preventDefault()});
 window.addEventListener('mousemove',e=>{if(!dragging)return;sidebarW=Math.max(180,Math.min(720,e.clientX));applyLayout()});
-window.addEventListener('mouseup',()=>{if(!dragging)return;dragging=false;sp.classList.remove('drag');document.body.style.cursor='';localStorage.setItem('it_sidebar',sidebarW)})})();
+window.addEventListener('mouseup',()=>{if(!dragging)return;dragging=false;sp.classList.remove('drag');document.body.style.cursor='';localStorage.setItem('it_sidebar_v2',sidebarW)})})();
+// 窗口尺寸变了也要重新算列数与缩放（拖分隔条走的是同一条 applyLayout）。
+let resizeTimer=0;
+window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(applyLayout,120)});
+attachBar($('grid'),$('grid').parentElement);
+attachBar(document.querySelector('main'),document.querySelector('main').parentElement);
 applyLayout();
 (async()=>{await loadSources();await refresh();if(items.length)await select(items[0].id)})();
 </script></body></html>
