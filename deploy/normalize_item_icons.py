@@ -83,7 +83,9 @@ def write_json_atomic(path: Path, payload: object) -> None:
     text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
     handle, temp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name, suffix=".tmp")
     try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+        # 显式 newline="\n"：Windows 的 text 模式会把 \n 翻成 \r\n，而仓库存的是 LF，
+        # 于是每次生成后 138 个 proxy 全部假脏（core.autocrlf=true 也不会替你消掉）。
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
             stream.write(text)
         for attempt in range(5):
             try:
@@ -93,7 +95,7 @@ def write_json_atomic(path: Path, payload: object) -> None:
                 # Windows refuses the rename while a scanner or a sibling build still holds the
                 # destination open; retry briefly, then fall back to an in-place write.
                 if attempt == 4:
-                    path.write_text(text, encoding="utf-8")
+                    path.write_text(text, encoding="utf-8", newline="\n")
                     Path(temp_name).unlink(missing_ok=True)
                 else:
                     time.sleep(0.2)
@@ -509,9 +511,9 @@ def main() -> int:
     if args.apply:
         for path, model in proxy_updates.items():
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(model, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            path.write_text(json.dumps(model, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
         for path, definition in item_updates.items():
-            path.write_text(json.dumps(definition, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            path.write_text(json.dumps(definition, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
         written = {path.resolve() for path in proxy_updates}
         # Only prune the item directories this run regenerated: per-item builds
         # (build.gradle --items X) must not delete every other item's proxies.
@@ -565,7 +567,7 @@ def main() -> int:
     if args.report:
         path = args.report if args.report.is_absolute() else root / args.report
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
     print(f"Audited {len(report)} items; {len(proxy_updates)} GUI-only proxy models; "
           f"mode={'apply' if args.apply else 'dry_run'}. "
           "Every proxy uses minecraft:block/block's GUI display: rotation [30, 225, 0], no translation, scale 0.625.")
