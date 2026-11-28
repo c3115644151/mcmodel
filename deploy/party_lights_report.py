@@ -206,8 +206,10 @@ def geometry_checks():
         # 0 档不写 light_emission —— 那正是"关掉就不发光"的落点。
         tier = state if state in dict((t, e) for t, e, _l in LEVEL_TIERS) else None
         want_emission = dict((t, e) for t, e, _l in LEVEL_TIERS).get(tier)
-        check(all(element.get("shade") is False for element in model["elements"]),
-              "geometry: " + name + " every element is unshaded so the lamp shows the artist's texels")
+        # 管线(normalize_block_model_lighting.py)把没有 mask 例外的 shade:false 归一成省略字段,
+        # 而 light_emission>0 的元素本来就整面 full-bright, shade 不再参与明暗 —— 所以这里只拦显式 shade:true。
+        check(all(element.get("shade") is not True for element in model["elements"]),
+              "geometry: " + name + " no element opts back into face shading")
         check(all(element.get("light_emission", 0) == want_emission for element in model["elements"]),
               "geometry: " + name + " elements emit " + str(want_emission) + " so the tier is real")
         if sorted(blocks) != sorted(ELEMENT_ORDER):
@@ -499,8 +501,9 @@ def item_checks():
             twin = [element for element in model["elements"] if element.get("name") == part]
             check(len(twin) == 1, "item: " + label + " model has one " + part + " element")
     # 手持模型不带 light_emission: 亮度是世界里的事, 物品栏里的图标没有"发多少光"。几何与 UV 必须逐一相同。
+    # shade 同理不是几何: 管线会把没有 mask 例外的 shade:false 归一成省略, 摆放模型因此比手持模型少这个键。
     def geometry_only(elements):
-        return [{key: value for key, value in element.items() if key != "light_emission"}
+        return [{key: value for key, value in element.items() if key not in ("light_emission", "shade")}
                 for element in elements]
 
     check(geometry_only(inventory["elements"]) == geometry_only(placed["elements"]),
