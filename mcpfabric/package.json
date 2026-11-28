@@ -10,6 +10,7 @@
   "scripts": {
     "setup-preview-worktree": "node run-powershell.mjs setup-preview-worktree.ps1",
     "start-preview": "node run-powershell.mjs start-preview.ps1",
+    "start-preview-detached": "node run-powershell.mjs start-preview-detached.ps1",
     "minimize-preview": "node run-powershell.mjs minimize-preview.ps1",
     "stop-preview": "node run-powershell.mjs stop-preview.ps1",
     "capture-preview": "node run-powershell.mjs capture-preview.ps1"

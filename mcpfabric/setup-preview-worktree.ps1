@@ -33,6 +33,22 @@ try {
     }
     git -C $Path submodule update --init --recursive tools
 
+    # The asset pipeline shells out to .venv/Scripts/python.exe and falls back to the py launcher,
+    # which is broken on machines where the Windows Store shim points at a missing install. A fresh
+    # checkout has no venv, so build one: the deploy scripts need Pillow and numpy and nothing else.
+    $venvPython = Join-Path $Path '.venv/Scripts/python.exe'
+    if (-not (Test-Path $venvPython)) {
+        $uv = (Get-Command uv -ErrorAction SilentlyContinue)
+        if (-not $uv) { throw 'no .venv in the preview checkout and uv is not on PATH; install uv first' }
+        Push-Location $Path
+        try {
+            & $uv.Source venv .venv
+            if ($LASTEXITCODE -ne 0) { throw 'uv venv failed' }
+            & $uv.Source pip install --python $venvPython pillow numpy
+            if ($LASTEXITCODE -ne 0) { throw 'uv pip install failed' }
+        } finally { Pop-Location }
+    }
+
     $npm = Get-Command npm -ErrorAction SilentlyContinue
     if (-not $npm) { throw 'npm is required to install the preview tooling' }
     $nodeModules = Join-Path $Path 'tools/mcpfabric/node_modules'
