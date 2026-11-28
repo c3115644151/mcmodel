@@ -22,9 +22,9 @@ def load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def save(path: Path, data: dict) -> None:
+def save(path: Path, data: dict, newline=None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline=newline)
 
 
 def shift_y(model: dict, amount: float) -> dict:
@@ -213,7 +213,7 @@ def main() -> None:
             "en_us": "Biome: %s | Position: %s, %s, %s | Dimension: %s",
             "zh_cn": "生物群系：%s | 坐标：%s, %s, %s | 维度：%s",
         }[locale]
-        save(path, document)
+        save(path, document, newline="\n")
 
     print("Staged seven model resources, facing states, light states, item selectors, and language entries.")
 

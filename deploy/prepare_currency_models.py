@@ -52,9 +52,9 @@ def read(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def save(path: Path, data):
+def save(path: Path, data, newline=None):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline=newline)
 
 
 def import_model(name: str, texture_id: str, texture_path: Path | None, separate_textures: bool = False):
@@ -302,7 +302,7 @@ def update_language_and_loot():
             document[f"item.pastoral_home.{key}" if key.startswith("coin_") and key != "coin_pile"
                      else f"block.pastoral_home.{key}"] = value
         document["container.pastoral_home.coin_pile"] = values["coin_pile"]
-        save(path, document)
+        save(path, document, newline="\n")
 
     save(ROOT / "src/generated/resources/data/pastoral_home/loot_table/blocks/coin_pile.json", {
         "type": "minecraft:block", "pools": [],
